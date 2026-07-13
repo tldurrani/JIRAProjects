@@ -1018,24 +1018,38 @@ function switchTab(name,btn){
 function renderAll(){
   renderFutureQuarterBanner();
   renderQuarterSwitcher();
-  renderQuarterOverview();
-  renderThemes();
-  // Epic Completion chart: render correct version, clean up the other
-  setTimeout(function(){
-    if(activeQuarterKey==='__all__'){
+  if(activeQuarterKey==='__all__'){
+    // All Quarters: hide individual quarter elements, show inline cumulative view
+    var qov=document.getElementById('quarter-overview-section'); if(qov){qov.style.display='none';qov.innerHTML='';}
+    var tg=document.getElementById('themes-grid'); if(tg) tg.style.display='none';
+    var sh=document.querySelector('.sec-hdr'); if(sh) sh.style.display='none';
+    var kr=document.getElementById('kpi-row'); if(kr) kr.style.display='none';
+    var kra=document.getElementById('kpi-row-all'); if(kra) kra.style.display='none';
+    var lb=document.getElementById('label-filter-banner'); if(lb) lb.style.display='none';
+    renderAllQuartersInline();
+    setTimeout(function(){
       var sq=document.getElementById('single-q-epic-completion'); if(sq) sq.remove();
       renderEpicCompletionAllQ();
-    } else {
-      var ec=document.getElementById('all-q-epic-completion'); if(ec) ec.remove();
+    },400);
+  } else {
+    // Single quarter: remove inline view, show normal elements
+    var aqi=document.getElementById('all-quarters-inline'); if(aqi) aqi.remove();
+    var ec=document.getElementById('all-q-epic-completion'); if(ec) ec.remove();
+    var tg2=document.getElementById('themes-grid'); if(tg2) tg2.style.display='';
+    var sh2=document.querySelector('.sec-hdr'); if(sh2) sh2.style.display='';
+    var kr2=document.getElementById('kpi-row'); if(kr2) kr2.style.display='';
+    renderQuarterOverview();
+    renderThemes();
+    setTimeout(function(){
       var sq2=document.getElementById('single-q-epic-completion'); if(sq2) sq2.remove();
-    }
-  },350);
+    },350);
+  }
   // Re-render Q Summary if it's the active tab
-  var qsTab = document.getElementById('tab-qsummary');
-  if(qsTab && qsTab.classList.contains('active')) renderQSummaryStatic();
-  var qv = document.getElementById('qbadge-val');
-  if(qv && getActiveQuarter().end){
-    qv.textContent = new Date(getActiveQuarter().end+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
+  var qsTab=document.getElementById('tab-qsummary');
+  if(qsTab&&qsTab.classList.contains('active')) renderQSummaryStatic();
+  var qv=document.getElementById('qbadge-val');
+  if(qv&&getActiveQuarter().end){
+    qv.textContent=new Date(getActiveQuarter().end+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
   }
 }
 function toggleTheme(id){
@@ -4689,6 +4703,176 @@ function countLabelledStories(storyList, label){
   var total=filtered.filter(function(s){return CANC.indexOf(s.status)<0;}).length;
   var done=filtered.filter(function(s){return s.statusCat==='done'&&CANC.indexOf(s.status)<0;}).length;
   return {total:total,done:done,pct:total>0?Math.round(done/total*100):0};
+}
+
+
+function renderAllQuartersInline(){
+  var containerId='all-quarters-inline';
+  var existing=document.getElementById(containerId);
+  var tabThemes=document.getElementById('tab-themes');
+  if(!tabThemes) return;
+
+  // Gather data
+  var keys=sortedQuarterKeys();
+  var CANC=['Cancelled','Canceled','Postponed'];
+  var totalDone=0,totalOutstanding=0,totalAtRisk=0,totalStories=0,totalEpics=0;
+  var aM={}, themeColors={}, themeOrder=[];
+  keys.forEach(function(k){
+    (state.quarters[k].themes||[]).forEach(function(t){
+      var nk=(t.name||'').trim().toLowerCase();
+      if(!aM[nk]){aM[nk]={name:t.name,color:t.color||'#6366f1',done:0,total:0};themeOrder.push(nk);}
+      (t.epics||[]).forEach(function(e){
+        var sd=epicStoriesData(e);
+        aM[nk].done+=sd.done||0;
+        aM[nk].total+=sd.total||0;
+        totalEpics++;
+        totalAtRisk+=(e.stories&&e.stories.blocked)||0;
+      });
+    });
+  });
+  Object.keys(aM).forEach(function(nk){
+    totalDone+=aM[nk].done;
+    totalStories+=aM[nk].total;
+  });
+  totalOutstanding=totalStories-totalDone;
+  var overallPct=totalStories>0?Math.round(totalDone/totalStories*100):0;
+  var overallColor=overallPct>=75?'#22c55e':overallPct>=40?'#f59e0b':'#ef4444';
+
+  // Gantt timeline
+  var ganttStart=new Date(state.quarters[keys[0]].start+'T00:00:00');
+  var ganttEnd=new Date(state.quarters[keys[keys.length-1]].end+'T23:59:59');
+  var ganttTotal=ganttEnd-ganttStart;
+  var tNow=new Date();
+  var todayPct=Math.min(100,Math.max(0,(tNow-ganttStart)/ganttTotal*100));
+
+  // KPI cards
+  var html='<div id="'+containerId+'" style="margin-top:0">';
+  html+='<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px">';
+  var kpis=[
+    {label:'Overall',val:overallPct+'%',sub:'stories complete',color:overallColor},
+    {label:'Stories done',val:totalDone,sub:'across all epics',color:'#22c55e'},
+    {label:'Outstanding',val:totalOutstanding,sub:'stories remaining',color:'#f59e0b'},
+    {label:'At risk',val:totalAtRisk,sub:'high+ priority open',color:'#ef4444'},
+  ];
+  kpis.forEach(function(k){
+    html+='<div style="background:var(--bg2);border:0.5px solid var(--border);border-radius:8px;padding:12px 14px">'
+      +'<div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.5px;font-family:var(--font-mono)">'+k.label+'</div>'
+      +'<div style="font-size:22px;font-weight:500;color:'+k.color+';margin:4px 0">'+k.val+'</div>'
+      +'<div style="font-size:11px;color:var(--text3)">'+k.sub+'</div>'
+      +'</div>';
+  });
+  html+='</div>';
+
+  // Cumulative table
+  html+='<div style="background:var(--bg2);border:0.5px solid var(--border);border-radius:12px;overflow:hidden">';
+  // Header
+  html+='<div style="display:grid;grid-template-columns:150px 1fr 56px 70px 80px;gap:12px;padding:10px 16px;background:var(--bg3);border-bottom:0.5px solid var(--border)">';
+  ['Theme','Overall progress — hover markers for dates','Done','Stories','Status'].forEach(function(h,i){
+    html+='<span style="font-size:10px;color:var(--text3);font-family:var(--font-mono);text-transform:uppercase;letter-spacing:0.5px'+(i>1?';text-align:right':'')+'">'+h+'</span>';
+  });
+  html+='</div>';
+
+  // Theme rows
+  themeOrder.forEach(function(nk){
+    var t=aM[nk];
+    var p=t.total>0?Math.round(t.done/t.total*100):0;
+    var pC=p>=75?'#22c55e':p>=40?'#f59e0b':'#ef4444';
+
+    // Status calculation
+    var themeKeys2=keys.filter(function(k){
+      var found=false;
+      (state.quarters[k].themes||[]).forEach(function(th){if((th.name||'').trim().toLowerCase()===nk)found=true;});
+      return found;
+    });
+    var latestQKey=themeKeys2[themeKeys2.length-1];
+    var latestQ=latestQKey?state.quarters[latestQKey]:null;
+    var qStat=latestQKey?qStatus(latestQKey):'future';
+    var stLabel,stBg,stColor,stTip='';
+
+    if(!latestQ){
+      stLabel='No data';stBg='rgba(100,116,139,0.1)';stColor='#64748b';stTip='No quarter data';
+    } else if(qStat==='future'){
+      stLabel='Upcoming';stBg='rgba(59,130,246,0.1)';stColor='#3b82f6';stTip='Quarter has not started yet';
+    } else if(qStat==='past'){
+      if(p>=80){stLabel='Completed';stBg='rgba(34,197,94,0.1)';stColor='#22c55e';}
+      else if(p>=50){stLabel='Partial';stBg='rgba(245,158,11,0.1)';stColor='#f59e0b';}
+      else{stLabel='Incomplete';stBg='rgba(239,68,68,0.1)';stColor='#ef4444';}
+      stTip='Quarter closed — final: '+p+'%';
+    } else {
+      var qStartD=latestQ.start?new Date(latestQ.start+'T00:00:00'):tNow;
+      var qEndD=latestQ.end?new Date(latestQ.end+'T23:59:59'):tNow;
+      var elapsed=Math.min(1,Math.max(0,(tNow-qStartD)/(qEndD-qStartD)));
+      var expPct=Math.round(elapsed*100);
+      var qlabel=getQuarterProgramLabel(latestQKey);
+      var qDoneU=0,qTotalU=0;
+      if(qlabel){
+        (state.quarters[latestQKey].themes||[]).forEach(function(th){
+          if((th.name||'').trim().toLowerCase()===nk){
+            (th.epics||[]).forEach(function(e){
+              var ld=countLabelledStories(e.storyList,qlabel);
+              if(ld){qTotalU+=ld.total;qDoneU+=ld.done;}
+            });
+          }
+        });
+      } else {
+        (state.quarters[latestQKey].themes||[]).forEach(function(th){
+          if((th.name||'').trim().toLowerCase()===nk){
+            (th.epics||[]).forEach(function(e){var sd=e.storiesAll||e.stories||{};qTotalU+=sd.total||0;qDoneU+=sd.done||0;});
+          }
+        });
+      }
+      var qPctU=qTotalU>0?Math.round(qDoneU/qTotalU*100):0;
+      var gap=qPctU-expPct;
+      stTip=(qlabel?'“'+qlabel+'” basis':'Overall basis')+' — '+qDoneU+'/'+qTotalU+' done ('+qPctU+'%) • Time elapsed: '+expPct+'% • Gap: '+(gap>=0?'+'+gap:gap)+'pts';
+      if(qPctU>=expPct-8){stLabel='On pace';stBg='rgba(34,197,94,0.1)';stColor='#22c55e';}
+      else if(qPctU>=expPct-25){stLabel='At risk';stBg='rgba(245,158,11,0.1)';stColor='#f59e0b';}
+      else{stLabel='Behind';stBg='rgba(239,68,68,0.1)';stColor='#ef4444';}
+    }
+
+    // Bar with milestone markers
+    var bar='<div style="position:relative;height:8px;background:rgba(255,255,255,0.06);border-radius:4px;overflow:visible">'
+      +'<div style="position:absolute;left:0;top:0;height:100%;width:'+p+'%;background:'+t.color+';border-radius:4px;opacity:0.85"></div>';
+    keys.forEach(function(k,ki){
+      var qEnd=new Date(state.quarters[k].end+'T23:59:59');
+      var qPct2=Math.min(100,Math.max(0,(qEnd-ganttStart)/ganttTotal*100));
+      var mColor='rgba(148,163,184,'+(ki===0?'0.7':'0.4')+')';
+      var qEndStr=new Date(state.quarters[k].end+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
+      bar+='<div style="position:absolute;left:'+qPct2+'%;top:-4px;bottom:-4px;width:2px;transform:translateX(-50%);background:'+mColor+';cursor:pointer;z-index:2" data-tip="'+escHtml(state.quarters[k].label)+' end · '+escHtml(qEndStr)+'">'
+        +'<div class="aq-tip"></div></div>';
+    });
+    bar+='<div style="position:absolute;left:'+todayPct+'%;top:-4px;bottom:-4px;width:2px;transform:translateX(-50%);background:#3b82f6;border-radius:1px;cursor:pointer;z-index:3" data-tip="Today · '+escHtml(tNow.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}))+'">'
+      +'<div class="aq-tip"></div></div>';
+    bar+='</div>';
+
+    html+='<div style="display:grid;grid-template-columns:150px 1fr 56px 70px 80px;gap:12px;align-items:center;padding:10px 16px;border-bottom:0.5px solid rgba(255,255,255,0.04)">'
+      +'<div style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:500;color:var(--text);overflow:hidden">'
+      +'<div style="width:7px;height:7px;border-radius:50%;background:'+t.color+';flex-shrink:0"></div>'
+      +'<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+escHtml(t.name)+'</span></div>'
+      +bar
+      +'<div style="font-family:var(--font-mono);font-size:12px;font-weight:600;text-align:right;color:'+pC+'">'+p+'%</div>'
+      +'<div style="font-size:10px;text-align:right;color:var(--text3)">'+t.done+'/'+t.total+'</div>'
+      +'<div style="text-align:right;position:relative" class="aq-st-wrap">'
+      +'<span style="font-size:10px;padding:2px 8px;border-radius:8px;font-weight:500;background:'+stBg+';color:'+stColor+';cursor:help;border-bottom:1px dashed '+stColor+'">'+stLabel+'</span>'
+      +'<div class="aq-st-tip" style="position:absolute;right:0;bottom:calc(100% + 6px);background:var(--bg2);border:0.5px solid var(--border2);border-radius:8px;padding:8px 10px;font-size:10px;color:var(--text);white-space:nowrap;opacity:0;pointer-events:none;transition:opacity 0.15s;z-index:20;line-height:1.6;font-family:var(--font-mono)">'+escHtml(stTip)+'</div>'
+      +'</div>'
+      +'</div>';
+  });
+
+  // Legend
+  html+='<div style="display:flex;gap:16px;padding:10px 16px;border-top:0.5px solid var(--border)">'
+    +'<div style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text3)"><div style="width:2px;height:12px;border-radius:1px;background:#3b82f6"></div>Today</div>'
+    +'<div style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text3)"><div style="width:1.5px;height:12px;background:rgba(148,163,184,0.5)"></div>Quarter end (hover)</div>'
+    +'<div style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text3);font-style:italic">Hover status for details</div>'
+    +'</div>';
+  html+='</div></div>';
+
+  if(existing){existing.outerHTML=html;}
+  else{
+    // Insert at top of tab-themes content, after the quarter switcher
+    var qs=document.getElementById('quarter-switcher');
+    if(qs) qs.insertAdjacentHTML('afterend',html);
+    else{var tt=document.getElementById('tab-themes'); if(tt) tt.insertAdjacentHTML('afterbegin',html);}
+  }
 }
 
 
