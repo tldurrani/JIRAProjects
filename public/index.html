@@ -4549,7 +4549,7 @@ function buildEpicCompletionChart(epics, title, subtitle){
       sd={total:sl.length,done:sl.filter(function(s){return s.statusCat==='done';}).length};
     } else {sd=e.stories||{};}
     var tot=sd.total||0, dn=sd.done||0;
-    return {key:e.key,done:dn,total:tot,pct:tot>0?Math.round(dn/tot*100):0,theme:e._themeName||'',color:e._themeColor||'#3b82f6'};
+    return {key:e.key,title:e.title||e.key,done:dn,total:tot,pct:tot>0?Math.round(dn/tot*100):0,theme:e._themeName||'',color:e._themeColor||'#3b82f6'};
   });
   rows.sort(function(a,b){return b.pct-a.pct;});
   return '<div style="background:var(--bg2);border:0.5px solid var(--border);border-radius:12px;padding:12px 16px;margin-top:12px">'
@@ -4561,9 +4561,9 @@ function buildEpicCompletionChart(epics, title, subtitle){
       return '<div style="display:grid;grid-template-columns:280px 1fr 48px 46px;align-items:center;gap:10px;padding:2px 0;border-bottom:none">'
         +'<div style="display:flex;align-items:center;gap:6px;min-width:0;overflow:hidden">'
         +'<span style="width:7px;height:7px;border-radius:50%;background:'+r.color+';flex-shrink:0;display:inline-block"></span>'
-        +'<a href="https://riversidejira.atlassian.net/browse/'+r.key+'" target="_blank" style="font-family:var(--font-mono);font-size:10px;color:var(--blue);text-decoration:none;white-space:nowrap;flex-shrink:0">'+escHtml(r.key)+'</a>'
-        +'<span style="font-size:11px;color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+escHtml(r.title)+'">'+escHtml(r.title)+'</span>'
-        +'<span style="font-size:9px;color:var(--text3);white-space:nowrap;flex-shrink:0;font-family:var(--font-mono);background:var(--bg3);padding:1px 5px;border-radius:4px">'+escHtml(r.theme)+'</span>'
+        +'<a href="https://riversidejira.atlassian.net/browse/'+r.key+'" target="_blank" style="font-family:var(--font-mono);font-size:10px;color:var(--blue);text-decoration:none;white-space:nowrap;flex-shrink:0" title="'+escHtml(r.key)+'">'+escHtml(r.key)+'</a>'
+        +'<span style="font-size:11px;color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1" title="'+escHtml(r.title)+'">'+escHtml(r.title)+'</span>'
+        +'<span style="font-size:9px;color:var(--text3);white-space:nowrap;flex-shrink:0;font-family:var(--font-mono);background:var(--bg3);padding:1px 5px;border-radius:4px;border:0.5px solid var(--border)">'+escHtml(r.theme)+'</span>'
         +'</div>'
         +'<div style="height:6px;background:rgba(255,255,255,0.06);border-radius:3px;overflow:hidden">'
         +'<div style="height:100%;width:'+r.pct+'%;background:'+r.color+';border-radius:3px;opacity:0.85"></div>'
@@ -4868,9 +4868,9 @@ function renderAllQuartersInline(){
 
   if(existing){existing.outerHTML=html;}
   else{
-    // Insert at top of tab-themes content, after the quarter switcher
-    var qs=document.getElementById('quarter-switcher');
-    if(qs) qs.insertAdjacentHTML('afterend',html);
+    // Insert inside tab-themes, after kpi-row-all div
+    var kraEl=document.getElementById('kpi-row-all');
+    if(kraEl) kraEl.insertAdjacentHTML('afterend',html);
     else{var tt=document.getElementById('tab-themes'); if(tt) tt.insertAdjacentHTML('afterbegin',html);}
   }
 }
