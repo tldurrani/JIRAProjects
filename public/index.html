@@ -856,7 +856,7 @@ document.addEventListener('DOMContentLoaded', initFirebase);
           <div><div class="field-label">Quarter Label</div><input class="field-input" id="set-quarter" placeholder="Q2 2026"></div>
           <div><div class="field-label">Start Date</div><input class="field-input" id="set-qstart" type="date"></div>
           <div><div class="field-label">End Date</div><input class="field-input" id="set-qend" type="date"></div>
-          <div style="grid-column:1/-1"><div class="field-label">Jira Program Label <span style="font-size:10px;color:var(--text3);font-weight:400">(optional — tag stories with this label to track quarter-specific progress, e.g. 26-Q3-Program)</span></div><input class="field-input" id="set-program-label" placeholder="e.g. 26-Q3-Program" style="font-family:var(--font-mono);font-size:12px"></div>
+          <div style="grid-column:1/-1"><div class="field-label">Quarter label <span style="font-size:10px;color:var(--text3);font-weight:400">(optional — Jira label used to tag stories for this quarter, e.g. 26-Q3-Program)</span></div><input class="field-input" id="set-program-label" placeholder="e.g. 26-Q3-Program" style="font-family:var(--font-mono);font-size:12px"></div>
         </div>
         <div>
           <div class="field-label">Severity Filter <span style="font-size:10px;color:var(--text3);font-weight:400">(optional — only show S1/S2/S3/S4 stories)</span></div>
@@ -864,8 +864,7 @@ document.addEventListener('DOMContentLoaded', initFirebase);
           <div style="font-size:10px;color:var(--text3);margin-top:6px">Select one or more severity levels. Leave blank to show all. <button onclick="clearSeverityFilter()" class="btn btn-ghost btn-sm" style="font-size:10px;padding:1px 6px">Clear</button></div>
         </div>
         <div>
-          <div class="field-label">Story Label Filters <span style="font-size:10px;color:var(--text3);font-weight:400">(optional &mdash; type label + Enter to add)</span></div>
-          <div class="label-tag-wrap" id="set-label-wrap" onclick="document.getElementById('set-label-input').focus()">
+          <div style="display:none" id="set-label-wrap">
             <div id="set-label-tags"></div>
             <input class="label-tag-input" id="set-label-input" placeholder="Add label..." autocomplete="off">
           </div>
@@ -1737,7 +1736,10 @@ function saveQuarterSettings(){
   state.quarters[key].start       = start;
   state.quarters[key].end         = end;
   state.quarters[key].storyLabels = newLabels;
-  state.quarters[key].programLabel = (document.getElementById('set-program-label')||{}).value.trim()||'';
+  var pl=(document.getElementById('set-program-label')||{}).value.trim()||'';
+  state.quarters[key].programLabel = pl;
+  // Use programLabel as the story label filter too (single source of truth)
+  state.quarters[key].storyLabels = pl ? [pl] : [];
   if(newKey !== key){
     state.quarters[newKey] = state.quarters[key];
     delete state.quarters[key];
@@ -4025,7 +4027,7 @@ function renderSettings(){
   var aq = key ? state.quarters[key] : {};
   document.getElementById('set-quarter').value=(aq&&aq.label)||'';
   document.getElementById('set-qstart').value=(aq&&aq.start)||'';
-  var plEl=document.getElementById('set-program-label'); if(plEl) plEl.value=(aq&&aq.programLabel)||'';
+  var plEl=document.getElementById('set-program-label'); if(plEl){ plEl.value=(aq&&aq.programLabel)||''; initProgramLabelAutocomplete(); }
   document.getElementById('set-qend').value=(aq&&aq.end)||'';
   initLabelTagWidget('set', (aq&&aq.storyLabels)||[]);
   renderSevPills();
@@ -4453,7 +4455,7 @@ function switchToQuarterFromSettings(key){
   var e1=document.getElementById('set-quarter'); if(e1) e1.value=aq.label||'';
   var e2=document.getElementById('set-qstart'); if(e2) e2.value=aq.start||'';
   var e3=document.getElementById('set-qend');   if(e3) e3.value=aq.end||'';
-  var plEl2=document.getElementById('set-program-label'); if(plEl2) plEl2.value=aq.programLabel||'';
+  var plEl2=document.getElementById('set-program-label'); if(plEl2){ plEl2.value=aq.programLabel||''; initProgramLabelAutocomplete(); }
   initLabelTagWidget('set',aq.storyLabels||[]); renderSevPills();
   var planningTab=document.getElementById('tab-planning');
   if(planningTab&&planningTab.classList.contains('active')) plRenderAll();
@@ -4876,6 +4878,55 @@ function renderAllQuartersInline(){
     if(kraEl) kraEl.insertAdjacentHTML('afterend',html);
     else{var tt=document.getElementById('tab-themes'); if(tt) tt.insertAdjacentHTML('afterbegin',html);}
   }
+}
+
+
+function initProgramLabelAutocomplete(){
+  var input = document.getElementById('set-program-label');
+  if(!input || input._acInit) return;
+  input._acInit = true;
+
+  function getOrCreateDropdown(){
+    var s = document.getElementById('program-label-suggestions');
+    if(!s){
+      s = document.createElement('div');
+      s.id = 'program-label-suggestions';
+      s.style.cssText = 'position:fixed;z-index:99999;background:#0f1520;border:0.5px solid #3b82f6;border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,0.6);min-width:220px;max-height:220px;overflow-y:auto;display:none';
+      document.body.appendChild(s);
+    }
+    return s;
+  }
+
+  function showPLSuggestions(q){
+    var s = getOrCreateDropdown();
+    var matches = JIRA_LABELS.filter(function(l){ return l.toLowerCase().indexOf((q||'').toLowerCase()) >= 0; });
+    if(!matches.length){ s.style.display='none'; return; }
+    var qi = (q||'').replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+    s.innerHTML = matches.slice(0,30).map(function(l){
+      var safe = escHtml(l);
+      var hi = qi ? safe.replace(new RegExp('('+qi+')', 'gi'), '<strong style="color:#93c5fd">$1</strong>') : safe;
+      return '<div style="padding:9px 14px;font-size:12px;cursor:pointer;color:#e2e8f0;border-bottom:0.5px solid rgba(255,255,255,0.06);font-family:var(--font-mono)" data-val="'+safe+'">'+hi+'</div>';
+    }).join('');
+    var rect = input.getBoundingClientRect();
+    var sugH = Math.min(matches.length * 38, 220);
+    var flipUp = (rect.bottom + sugH + 8) > window.innerHeight;
+    s.style.left = rect.left + 'px';
+    s.style.width = Math.max(220, rect.width) + 'px';
+    s.style.top = flipUp ? 'auto' : (rect.bottom + 4) + 'px';
+    s.style.bottom = flipUp ? (window.innerHeight - rect.top + 4) + 'px' : 'auto';
+    s.style.display = 'block';
+    s.onmousedown = function(e){
+      var item = e.target.closest('[data-val]');
+      if(item){ e.preventDefault(); input.value = item.getAttribute('data-val'); s.style.display='none'; }
+    };
+  }
+
+  input.oninput = function(){ showPLSuggestions(input.value.trim()); };
+  input.onfocus = function(){ if(input.value.length > 0) showPLSuggestions(input.value.trim()); };
+  input.onkeydown = function(e){
+    if(e.key==='Escape'){ var s=document.getElementById('program-label-suggestions'); if(s) s.style.display='none'; }
+  };
+  input.onblur = function(){ setTimeout(function(){ var s=document.getElementById('program-label-suggestions'); if(s) s.style.display='none'; }, 150); };
 }
 
 
