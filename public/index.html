@@ -1105,18 +1105,20 @@ function clearFilter(){
   var fp = document.getElementById('filter-panel');
   if(fp) fp.style.display = 'none';
   // Clear label filter if active, then refresh epics
-  var key=(activeQuarterKey&&activeQuarterKey!=='__all__')?activeQuarterKey:sortedQuarterKeys().pop();
-  if(key&&state.quarters[key]&&state.quarters[key].storyLabels&&state.quarters[key].storyLabels.length){
-    state.quarters[key].storyLabels=[];
-    state.quarters[key].programLabel='';
-    labelTagState['set']=[];
-    renderLabelTags('set');
-    var plEl=document.getElementById('set-program-label'); if(plEl) plEl.value='';
-    persist();
-    autoRefreshEpics();
-  } else {
-    renderThemes();
+  var key2=(activeQuarterKey&&activeQuarterKey!=='__all__')?activeQuarterKey:sortedQuarterKeys().pop();
+  if(key2&&state.quarters[key2]){
+    state.quarters[key2].storyLabels=[];
+    state.quarters[key2].programLabel='';
+    state.quarters[key2].severityFilter=[];
   }
+  labelTagState['set']=[];
+  renderLabelTags('set');
+  var plEl=document.getElementById('set-program-label'); if(plEl) plEl.value='';
+  var banner=document.getElementById('label-filter-banner');
+  if(banner) banner.style.display='none';
+  persist();
+  // Full refresh to get correct story counts
+  refreshAllEpics();
 }
 
 
@@ -1479,13 +1481,20 @@ function clearAllLabelsAndSave(){
   if(!key) return;
   state.quarters[key].storyLabels = [];
   state.quarters[key].programLabel = '';
+  state.quarters[key].severityFilter = [];
   labelTagState['set'] = [];
   renderLabelTags('set');
   // Sync settings UI
   var plEl = document.getElementById('set-program-label'); if(plEl) plEl.value = '';
   persist();
-  renderThemes();
-  autoRefreshEpics();
+  // Immediately hide banner and reset UI
+  var banner = document.getElementById('label-filter-banner');
+  if(banner) banner.style.display = 'none';
+  var fp = document.getElementById('filter-panel');
+  if(fp) fp.style.display = 'none';
+  activeFilter = null;
+  // Refresh epics with no filter to get correct counts
+  refreshAllEpics();
 }
 
 function clearAllLabels(prefix){
