@@ -1447,6 +1447,7 @@ function clearSeverityFilter(){
   persist();
   renderSevPills();
   renderThemes();
+  renderAll();
   autoRefreshEpics();
 }
 
@@ -1459,8 +1460,11 @@ function clearAllLabelsAndSave(){
   var key = (activeQuarterKey && activeQuarterKey !== '__all__') ? activeQuarterKey : sortedQuarterKeys().pop();
   if(!key) return;
   state.quarters[key].storyLabels = [];
+  state.quarters[key].programLabel = '';
   labelTagState['set'] = [];
   renderLabelTags('set');
+  // Sync settings UI
+  var plEl = document.getElementById('set-program-label'); if(plEl) plEl.value = '';
   persist();
   renderThemes();
   autoRefreshEpics();
