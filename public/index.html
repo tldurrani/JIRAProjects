@@ -154,6 +154,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-sans);font-si
 .story-bar-header{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px}
 .story-bar-title{font-family:var(--font-mono);font-size:11px;color:var(--text3);letter-spacing:0.5px}
 .story-bar-pct{font-family:var(--font-mono);font-size:14px;font-weight:700}
+.aq-st-wrap:hover .aq-st-tip{opacity:1 !important}
 .aq-tip{position:absolute;bottom:14px;left:50%;transform:translateX(-50%);background:var(--bg2);border:0.5px solid var(--border2);border-radius:6px;padding:3px 8px;font-size:10px;font-family:var(--font-mono);white-space:nowrap;opacity:0;pointer-events:none;transition:opacity 0.15s;color:var(--text);z-index:10}
 div[data-tip]:hover .aq-tip{opacity:1}
 div[data-tip]:hover .aq-tip::after{content:attr(data-tip)}
@@ -387,7 +388,7 @@ document.addEventListener('DOMContentLoaded', initFirebase);
           <span style="font-family:var(--font-mono);font-size:10px;color:var(--blue);text-transform:uppercase;letter-spacing:1px" id="filter-panel-title">Outstanding Stories</span>
           <span style="font-family:var(--font-mono);font-size:11px;color:var(--text3)" id="filter-panel-count"></span>
         </div>
-        <button class="btn btn-ghost btn-sm" onclick="clearFilter()">Clear Filter &times;</button>
+        <button class="btn btn-ghost btn-sm" onclick="activeFilter&&activeFilter.indexOf('sev-')===0?clearSevFilter():clearFilter()">Clear Filter &times;</button>
       </div>
       <div id="filter-panel-body" style="max-height:500px;overflow-y:auto;padding:16px 18px"></div>
     </div>
@@ -857,14 +858,13 @@ document.addEventListener('DOMContentLoaded', initFirebase);
           <div><div class="field-label">End Date</div><input class="field-input" id="set-qend" type="date"></div>
           <div style="grid-column:1/-1"><div class="field-label">Quarter label <span style="font-size:10px;color:var(--text3);font-weight:400">(optional — Jira label used to tag stories for this quarter, e.g. 26-Q3-Program)</span></div><input class="field-input" id="set-program-label" placeholder="e.g. 26-Q3-Program" style="font-family:var(--font-mono);font-size:12px"></div>
         </div>
-        <div>
+        <div style="display:none">
           <div class="field-label">Severity Filter <span style="font-size:10px;color:var(--text3);font-weight:400">(optional — only show S1/S2/S3/S4 stories)</span></div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px" id="sev-filter-pills"></div>
           <div style="font-size:10px;color:var(--text3);margin-top:6px">Select one or more severity levels. Leave blank to show all. <button onclick="clearSeverityFilter()" class="btn btn-ghost btn-sm" style="font-size:10px;padding:1px 6px">Clear</button></div>
         </div>
         <div>
-          <div class="field-label">Story Label Filters <span style="font-size:10px;color:var(--text3);font-weight:400">(optional &mdash; type label + Enter to add)</span></div>
-          <div class="label-tag-wrap" id="set-label-wrap" onclick="document.getElementById('set-label-input').focus()">
+          <div style="display:none" id="set-label-wrap">
             <div id="set-label-tags"></div>
             <input class="label-tag-input" id="set-label-input" placeholder="Add label..." autocomplete="off">
           </div>
@@ -1017,24 +1017,38 @@ function switchTab(name,btn){
 function renderAll(){
   renderFutureQuarterBanner();
   renderQuarterSwitcher();
-  renderQuarterOverview();
-  renderThemes();
-  // Epic Completion chart: render correct version, clean up the other
-  setTimeout(function(){
-    if(activeQuarterKey==='__all__'){
+  if(activeQuarterKey==='__all__'){
+    // All Quarters: hide individual quarter elements, show inline cumulative view
+    var qov=document.getElementById('quarter-overview-section'); if(qov){qov.style.display='none';qov.innerHTML='';}
+    var tg=document.getElementById('themes-grid'); if(tg) tg.style.display='none';
+    var sh=document.querySelector('.sec-hdr'); if(sh) sh.style.display='none';
+    var kr=document.getElementById('kpi-row'); if(kr) kr.style.display='none';
+    var kra=document.getElementById('kpi-row-all'); if(kra) kra.style.display='none';
+    var lb=document.getElementById('label-filter-banner'); if(lb) lb.style.display='none';
+    renderAllQuartersInline();
+    setTimeout(function(){
       var sq=document.getElementById('single-q-epic-completion'); if(sq) sq.remove();
       renderEpicCompletionAllQ();
-    } else {
-      var ec=document.getElementById('all-q-epic-completion'); if(ec) ec.remove();
+    },400);
+  } else {
+    // Single quarter: remove inline view, show normal elements
+    var aqi=document.getElementById('all-quarters-inline'); if(aqi) aqi.remove();
+    var ec=document.getElementById('all-q-epic-completion'); if(ec) ec.remove();
+    var tg2=document.getElementById('themes-grid'); if(tg2) tg2.style.display='';
+    var sh2=document.querySelector('.sec-hdr'); if(sh2) sh2.style.display='';
+    var kr2=document.getElementById('kpi-row'); if(kr2) kr2.style.display='';
+    renderQuarterOverview();
+    renderThemes();
+    setTimeout(function(){
       var sq2=document.getElementById('single-q-epic-completion'); if(sq2) sq2.remove();
-    }
-  },350);
+    },350);
+  }
   // Re-render Q Summary if it's the active tab
-  var qsTab = document.getElementById('tab-qsummary');
-  if(qsTab && qsTab.classList.contains('active')) renderQSummaryStatic();
-  var qv = document.getElementById('qbadge-val');
-  if(qv && getActiveQuarter().end){
-    qv.textContent = new Date(getActiveQuarter().end+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
+  var qsTab=document.getElementById('tab-qsummary');
+  if(qsTab&&qsTab.classList.contains('active')) renderQSummaryStatic();
+  var qv=document.getElementById('qbadge-val');
+  if(qv&&getActiveQuarter().end){
+    qv.textContent=new Date(getActiveQuarter().end+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
   }
 }
 function toggleTheme(id){
@@ -1253,7 +1267,7 @@ function showSuggestions(prefix, query){
     var qi = q.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
     var hi = safe.replace(new RegExp('('+qi+')', 'gi'), '<strong style="color:#93c5fd">$1</strong>');
     return '<div style="padding:9px 14px;font-size:12px;cursor:pointer;color:#e2e8f0;border-bottom:0.5px solid rgba(255,255,255,0.06);font-family:var(--font-mono)" data-label="'+safe+'">'+hi+'</div>';
-  }).join('')+sevCard;
+  }).join('');
 
   // Position below or above input depending on viewport space
   var rect = input.getBoundingClientRect();
@@ -1433,6 +1447,7 @@ function clearSeverityFilter(){
   persist();
   renderSevPills();
   renderThemes();
+  renderAll();
   autoRefreshEpics();
 }
 
@@ -1440,13 +1455,22 @@ function getSeverityFilter(){
   var key=(activeQuarterKey&&activeQuarterKey!=='__all__')?activeQuarterKey:sortedQuarterKeys().pop();
   return (key&&state.quarters[key]&&state.quarters[key].severityFilter)||[];
 }
+function sevFilterMatchesPriority(p){
+  // Map Jira priority to S level, check against active sev filter
+  var sevs=getSeverityFilter(); if(!sevs.length) return true;
+  var map={'Highest':'S1','High':'S2','Medium':'S3','Low':'S4'};
+  return sevs.indexOf(map[p])>=0;
+}
 
 function clearAllLabelsAndSave(){
   var key = (activeQuarterKey && activeQuarterKey !== '__all__') ? activeQuarterKey : sortedQuarterKeys().pop();
   if(!key) return;
   state.quarters[key].storyLabels = [];
+  state.quarters[key].programLabel = '';
   labelTagState['set'] = [];
   renderLabelTags('set');
+  // Sync settings UI
+  var plEl = document.getElementById('set-program-label'); if(plEl) plEl.value = '';
   persist();
   renderThemes();
   autoRefreshEpics();
@@ -1723,7 +1747,9 @@ function saveQuarterSettings(){
   state.quarters[key].end         = end;
   state.quarters[key].storyLabels = newLabels;
   var pl=(document.getElementById('set-program-label')||{}).value.trim()||'';
-  state.quarters[key].programLabel=pl;
+  state.quarters[key].programLabel = pl;
+  // Use programLabel as the story label filter too (single source of truth)
+  state.quarters[key].storyLabels = pl ? [pl] : [];
   if(newKey !== key){
     state.quarters[newKey] = state.quarters[key];
     delete state.quarters[key];
@@ -1835,11 +1861,10 @@ function renderQuarterOverview(){
     var t=aM[nk], p=t.total>0?Math.round(t.done/t.total*100):0;
     var pC=p>=75?'#22c55e':p>=40?'#f59e0b':'#ef4444';
 
-    // Status: quarter-aware calculation
+    // Status: quarter-aware, uses programLabel if set
     var tNow=new Date(), tStart=ganttStart, tEnd=ganttEnd;
-    var stLabel,stBg,stColor;
+    var stLabel,stBg,stColor,stTip='';
 
-    // Find which quarters this theme appears in
     var themeInQ={};
     keys.forEach(function(k){
       (state.quarters[k].themes||[]).forEach(function(th){
@@ -1847,45 +1872,57 @@ function renderQuarterOverview(){
       });
     });
     var themeKeys=keys.filter(function(k){return themeInQ[k];});
-
-    // Determine theme's "active" quarter context
     var latestQKey=themeKeys[themeKeys.length-1];
     var latestQ=latestQKey?state.quarters[latestQKey]:null;
     var qStat=latestQKey?qStatus(latestQKey):'future';
 
     if(!latestQ||themeKeys.length===0){
-      // No quarter data
       stLabel='No data'; stBg='rgba(100,116,139,0.1)'; stColor='#64748b';
+      stTip='No quarter data found';
     } else if(qStat==='future'){
-      // Theme only exists in a future quarter
       stLabel='Upcoming'; stBg='rgba(59,130,246,0.1)'; stColor='#3b82f6';
+      stTip='Quarter has not started yet';
     } else if(qStat==='past'){
-      // Q2 is done - judge by final completion
       if(p>=80){stLabel='Completed';stBg='rgba(34,197,94,0.1)';stColor='#22c55e';}
       else if(p>=50){stLabel='Partial';stBg='rgba(245,158,11,0.1)';stColor='#f59e0b';}
       else{stLabel='Incomplete';stBg='rgba(239,68,68,0.1)';stColor='#ef4444';}
+      stTip='Quarter closed — final overall: '+p+'%';
     } else {
-      // Current quarter - compare % done in current Q vs time elapsed in current Q
-      var qStart=latestQ.start?new Date(latestQ.start+'T00:00:00'):tNow;
-      var qEnd=latestQ.end?new Date(latestQ.end+'T23:59:59'):tNow;
-      var qElapsed=Math.min(1,Math.max(0,(tNow-qStart)/(qEnd-qStart)));
+      var qStartD=latestQ.start?new Date(latestQ.start+'T00:00:00'):tNow;
+      var qEndD=latestQ.end?new Date(latestQ.end+'T23:59:59'):tNow;
+      var qElapsed=Math.min(1,Math.max(0,(tNow-qStartD)/(qEndD-qStartD)));
       var qExpPct=Math.round(qElapsed*100);
-      // Get this quarter's done count for the theme
-      var qDone=0, qTotal=0;
-      (state.quarters[latestQKey].themes||[]).forEach(function(th){
-        if((th.name||'').trim().toLowerCase()===nk){
-          (th.epics||[]).forEach(function(e){
-            var sd=e.storiesAll||e.stories||{};
-            qTotal+=sd.total||0; qDone+=sd.done||0;
-          });
-        }
-      });
-      var qPct=qTotal>0?Math.round(qDone/qTotal*100):0;
-      if(qPct>=qExpPct-8){stLabel='On pace';stBg='rgba(34,197,94,0.1)';stColor='#22c55e';}
-      else if(qPct>=qExpPct-25){stLabel='At risk';stBg='rgba(245,158,11,0.1)';stColor='#f59e0b';}
+      var qlabel=getQuarterProgramLabel(latestQKey);
+      var qPctUsed=0,qDoneUsed=0,qTotalUsed=0,basisStr='';
+      if(qlabel){
+        (state.quarters[latestQKey].themes||[]).forEach(function(th){
+          if((th.name||'').trim().toLowerCase()===nk){
+            (th.epics||[]).forEach(function(e){
+              var ld=countLabelledStories(e.storyList,qlabel);
+              if(ld){qTotalUsed+=ld.total;qDoneUsed+=ld.done;}
+            });
+          }
+        });
+        qPctUsed=qTotalUsed>0?Math.round(qDoneUsed/qTotalUsed*100):0;
+        basisStr='“'+qlabel+'”: '+qDoneUsed+'/'+qTotalUsed+' done ('+qPctUsed+'%)';
+      } else {
+        (state.quarters[latestQKey].themes||[]).forEach(function(th){
+          if((th.name||'').trim().toLowerCase()===nk){
+            (th.epics||[]).forEach(function(e){
+              var sd=e.storiesAll||e.stories||{};
+              qTotalUsed+=sd.total||0;qDoneUsed+=sd.done||0;
+            });
+          }
+        });
+        qPctUsed=qTotalUsed>0?Math.round(qDoneUsed/qTotalUsed*100):0;
+        basisStr='Overall: '+qDoneUsed+'/'+qTotalUsed+' done ('+qPctUsed+'%)';
+      }
+      var gap=qPctUsed-qExpPct;
+      stTip=(qlabel?'Label basis':'Overall basis')+' — '+basisStr+' • Time elapsed: '+qExpPct+'% • Gap: '+(gap>=0?'+'+gap:gap)+'pts';
+      if(qPctUsed>=qExpPct-8){stLabel='On pace';stBg='rgba(34,197,94,0.1)';stColor='#22c55e';}
+      else if(qPctUsed>=qExpPct-25){stLabel='At risk';stBg='rgba(245,158,11,0.1)';stColor='#f59e0b';}
       else{stLabel='Behind';stBg='rgba(239,68,68,0.1)';stColor='#ef4444';}
     }
-
     // Build bar with quarter-end markers and today line (hover tooltips only)
     var todayP=Math.min(100,Math.max(0,(tNow-tStart)/(tEnd-tStart)*100));
     var bar='<div style="position:relative;height:8px;background:rgba(255,255,255,0.06);border-radius:4px;overflow:visible">'
@@ -1897,8 +1934,9 @@ function renderQuarterOverview(){
       var qPct=Math.min(100,Math.max(0,(qEnd-tStart)/(tEnd-tStart)*100));
       var mColor='rgba(148,163,184,'+(ki===0?'0.7':'0.4')+')';
       var qEndStr=new Date(state.quarters[k].end+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
-      bar+='<div style="position:absolute;left:'+qPct+'%;top:-4px;bottom:-4px;width:2px;transform:translateX(-50%);background:'+mColor+';cursor:pointer;z-index:2" data-tip="'+escHtml(state.quarters[k].label)+' end · '+escHtml(qEndStr)+'">'
-        +'<div class="aq-tip"></div>'
+      bar+='<div style="position:absolute;left:'+qPct+'%;top:-6px;bottom:-6px;width:12px;transform:translateX(-50%);cursor:pointer;z-index:2;display:flex;justify-content:center" data-tip="'+escHtml(state.quarters[k].label)+' end · '+escHtml(qEndStr)+'">';
+        +'<div style="width:2px;height:100%;background:'+mColor+'"></div>'
+        +'<div class="aq-tip"></div></div>';
         +'</div>';
     });
 
@@ -1914,7 +1952,9 @@ function renderQuarterOverview(){
       +bar
       +'<div style="font-family:var(--font-mono);font-size:12px;font-weight:600;text-align:right;color:'+pC+'">'+p+'%</div>'
       +'<div style="font-size:10px;text-align:right;color:var(--text3)">'+t.done+'/'+t.total+'</div>'
-      +'<div style="text-align:right"><span style="font-size:10px;padding:2px 8px;border-radius:8px;font-weight:500;background:'+stBg+';color:'+stColor+'">'+stLabel+'</span></div>'
+      +'<div style="text-align:right;position:relative" class="aq-st-wrap"><span style="font-size:10px;padding:2px 8px;border-radius:8px;font-weight:500;background:'+stBg+';color:'+stColor+';cursor:help;border-bottom:1px dashed '+stColor+'">'+stLabel+'</span>'
+      +'<div class="aq-st-tip" style="position:absolute;right:0;bottom:calc(100% + 6px);background:var(--bg2);border:0.5px solid var(--border2);border-radius:8px;padding:8px 10px;font-size:10px;color:var(--text);white-space:nowrap;opacity:0;pointer-events:none;transition:opacity 0.15s;z-index:20;line-height:1.6;font-family:var(--font-mono)">'+escHtml(stTip)+'</div>'
+      +'</div>'
       +'</div>';
   }).join('');
     html+='<div style="background:var(--bg2);border:0.5px solid rgba(168,85,247,0.3);border-radius:12px;overflow:hidden">'
@@ -1952,6 +1992,27 @@ function setKpiFilter(f){
   renderFilterPanel(activeFilter);
   if(fp) fp.style.display = 'block';
   setTimeout(function(){ if(fp) fp.scrollIntoView({behavior:'smooth',block:'nearest'}); }, 100);
+}
+
+function toggleSevKpiFilter(sev){
+  var key=(activeQuarterKey&&activeQuarterKey!=='__all__')?activeQuarterKey:sortedQuarterKeys().pop();
+  var fkey='sev-'+sev;
+  var wasActive=(activeFilter===fkey);
+  // Reset state
+  if(key) state.quarters[key].severityFilter=[];
+  activeFilter=null;
+  persist();
+  var fp=document.getElementById('filter-panel');
+  if(wasActive){ if(fp) fp.style.display='none'; renderAll(); return; }
+  // Activate
+  if(key){ state.quarters[key].severityFilter=[sev]; persist(); }
+  activeFilter=fkey;
+  renderAll();
+  setTimeout(function(){
+    renderFilterPanel(fkey);
+    var fp2=document.getElementById('filter-panel');
+    if(fp2){ fp2.style.display='block'; fp2.scrollIntoView({behavior:'smooth',block:'nearest'}); }
+  },150);
 }
 
 function renderFilterPanel(filter){
@@ -2054,28 +2115,82 @@ function renderFilterPanel(filter){
       body.appendChild(block);
     });
 
+  } else if(filter && filter.indexOf('sev-')===0){
+    var sevKey = filter.replace('sev-',''); // e.g. 'S1'
+    var sevColor = {S1:'#f87171',S2:'#fbbf24',S3:'#60a5fa',S4:'#a78bfa'}[sevKey]||'#6b7280';
+    title.textContent = sevKey + ' Severity Bugs';
+
+    var allEpics2=[]; getActiveThemes().forEach(function(t){(t.epics||[]).forEach(function(e){allEpics2.push({epic:e,theme:t});});});
+    var matched=[];
+    allEpics2.forEach(function(item){
+      var e=item.epic;
+      var CANC2=['Cancelled','Canceled','Postponed'];
+      var sevStories=(e.storyList||[]).filter(function(s){
+        if(CANC2.indexOf(s.status)>=0||s.statusCat==='done') return false;
+        // If severity field populated, use it; otherwise show all outstanding (epic was fetched filtered)
+        if(s.severity) return s.severity===sevKey;
+        return true; // fallback: all outstanding stories (epic fetched with sev JQL filter)
+      });
+      if(sevStories.length) matched.push({epic:e,theme:item.theme,stories:sevStories});
+    });
+
+    countEl.textContent = matched.reduce(function(a,m){return a+m.stories.length;},0)+' '+sevKey+' stories across '+matched.length+' epics';
+    if(!matched.length){body.innerHTML='<div style="font-size:13px;padding:8px 0;color:var(--text3)">No '+sevKey+' stories found in current data. <br><button class="btn btn-sm" style="margin-top:8px" onclick="refreshAllEpics()">&#8635; Refresh Epics to load severity data</button></div>';return;}
+
+    matched.forEach(function(item){
+      var e=item.epic, t=item.theme;
+      var block=document.createElement('div');
+      block.style.cssText='margin-bottom:14px;padding:12px 14px;background:var(--bg3);border-radius:8px;border:1px solid var(--border)';
+      var hdr=document.createElement('div');
+      hdr.style.cssText='display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap';
+      hdr.innerHTML='<a href="https://riversidejira.atlassian.net/browse/'+e.key+'" target="_blank" class="epic-key-badge">'+e.key+'</a>'
+        +'<span style="font-size:12px;font-weight:500;flex:1">'+escHtml(e.title||e.key)+'</span>'
+        +'<span style="font-size:11px;font-family:var(--font-mono);color:'+sevColor+';background:'+sevColor+'22;padding:2px 8px;border-radius:10px">'+item.stories.length+' '+sevKey+'</span>'
+        +'<span style="font-size:10px;color:var(--text3)">'+escHtml(t.name)+'</span>';
+      block.appendChild(hdr);
+      var sl=document.createElement('div');
+      sl.style.cssText='border-top:1px solid var(--border);padding-top:8px';
+      item.stories.forEach(function(s){
+        var sr=document.createElement('div');
+        sr.style.cssText='display:flex;flex-direction:column;gap:3px;padding:7px 0;border-bottom:1px solid rgba(255,255,255,0.04)';
+        var statusCol={done:'#22c55e',indeterminate:'#3b82f6',new:'rgba(255,255,255,0.3)'}[s.statusCat]||'#6b7280';
+        var createdStr=s.created?new Date(s.created).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):'';
+        sr.innerHTML='<div style="display:flex;align-items:center;gap:7px">'
+          +'<span style="width:7px;height:7px;border-radius:50%;background:'+sevColor+';flex-shrink:0;display:inline-block"></span>'
+          +'<a href="https://riversidejira.atlassian.net/browse/'+s.key+'" target="_blank" style="font-family:var(--font-mono);font-size:10px;color:var(--blue);text-decoration:none;font-weight:500;white-space:nowrap">'+s.key+'</a>'
+          +'<span style="font-size:10px;color:var(--text3);flex:1">'+escHtml(s.assignee&&s.assignee!=='Unassigned'?s.assignee:'Unassigned')+'</span>'
+          +(createdStr?'<span style="font-size:9px;color:var(--text3);font-family:var(--font-mono)">&#128197; '+createdStr+'</span>':'')
+          +'<span style="font-size:9px;font-family:var(--font-mono);padding:1px 7px;border-radius:10px;background:'+statusCol+'22;color:'+statusCol+'">'+s.status+'</span>'
+          +'</div>'
+          +'<div style="font-size:12px;color:#e2e8f0;padding-left:14px;line-height:1.4">'+escHtml(s.summary||'')+'</div>';
+        sl.appendChild(sr);
+      });
+      block.appendChild(sl);
+      body.appendChild(block);
+    });
+
   } else if(filter&&filter.indexOf('sev-')===0){
     var sevKey=filter.replace('sev-','');
     var sevCol={S1:'#f87171',S2:'#fbbf24',S3:'#60a5fa',S4:'#a78bfa'}[sevKey]||'#6b7280';
     title.textContent=sevKey+' Severity Bugs';
     title.style.color=sevCol;
+    var CANC4=['Cancelled','Canceled','Postponed'];
     var matched=[];
     getActiveThemes().forEach(function(t){
       (t.epics||[]).forEach(function(e){
-        var CANC3=['Cancelled','Canceled','Postponed'];
         var sevStories=(e.storyList||[]).filter(function(s){
-          return s.statusCat!=='done'&&CANC3.indexOf(s.status)<0&&(s.severity===sevKey);
+          return s.statusCat!=='done'&&CANC4.indexOf(s.status)<0&&s.severity===sevKey;
         });
         if(sevStories.length) matched.push({epic:e,theme:t,stories:sevStories});
       });
     });
     countEl.textContent=matched.reduce(function(a,m){return a+m.stories.length;},0)+' '+sevKey+' bugs across '+matched.length+' epics';
     if(!matched.length){
-      body.innerHTML='<div style="padding:12px;color:var(--text3)">No open '+sevKey+' bugs found. <br><small>Refresh Epics to load severity data from Jira.</small><br><button class="btn btn-sm" style="margin-top:8px" onclick="refreshAllEpics()">&#8635; Refresh Epics</button></div>';
+      body.innerHTML='<div style="padding:12px;color:var(--text3)">No open '+sevKey+' bugs found.<br><small>Hit Refresh Epics to load severity data.</small><br><button class="btn btn-sm" style="margin-top:8px" onclick="refreshAllEpics()">&#8635; Refresh Epics</button></div>';
       return;
     }
     matched.forEach(function(item){
-      var e=item.epic,t=item.theme;
+      var e=item.epic, t=item.theme;
       var block=document.createElement('div');
       block.style.cssText='margin-bottom:12px;padding:12px 14px;background:var(--bg3);border-radius:8px;border-left:3px solid '+sevCol;
       block.innerHTML='<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">'
@@ -2258,17 +2373,23 @@ function renderThemes(){
   document.getElementById('hdr-sub').textContent=getActiveQuarter().label+' - '+weeksLeft()+' weeks remaining - '+totalEpics+' epics tracked';
   document.getElementById('themes-label').textContent=themes.length+' Theme'+(themes.length!==1?'s':'')+' - '+totalEpics+' Epics';
 
-  // Severity counts from storyList
+  // Count stories by severity from storyList (populated after Refresh Epics)
   var sevCounts={S1:0,S2:0,S3:0,S4:0};
-  var CANC_S=['Cancelled','Canceled','Postponed'];
+  var CANC_SEV=['Cancelled','Canceled','Postponed'];
   allEpics.forEach(function(e){
     ((e.storyList)||[]).forEach(function(s){
-      if(CANC_S.indexOf(s.status)>=0||s.statusCat==='done') return;
+      if(CANC_SEV.indexOf(s.status)>=0||s.statusCat==='done') return;
       var sv=s.severity;
       if(sv&&sevCounts.hasOwnProperty(sv)) sevCounts[sv]++;
     });
   });
+  // If all zero, fetch live counts from Jira async and re-render when done
+  var sevTotal=sevCounts.S1+sevCounts.S2+sevCounts.S3+sevCounts.S4;
+  if(sevTotal===0){
+    fetchSevCountsFromJira();
+  }
   var activeSevs=getSeverityFilter();
+
   var kpis=[
     {l:'Themes',v:themes.length,s:'This quarter',c:'c-blue'},
     {l:'Epics',v:totalEpics,s:doneEpics+' completed',c:'c-purple'},
@@ -2282,22 +2403,27 @@ function renderThemes(){
   var kpiRowAll2=document.getElementById('kpi-row-all');
   if(kpiRowEl2) kpiRowEl2.style.display='';
   if(kpiRowAll2) kpiRowAll2.style.display='none';
+
+  // Build severity KPI card
   var sevColors={S1:'#f87171',S2:'#fbbf24',S3:'#60a5fa',S4:'#a78bfa'};
-  var sevCard='<div class="kpi" style="cursor:default"><div class="kpi-l">Severity bugs</div>'
-    +'<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:6px">'
+  var sevCard='<div class="kpi sev-kpi-card" style="cursor:default"><div class="kpi-l">Severity bugs</div>'
+    +'<div class="sev-badges" style="display:flex;gap:5px;flex-wrap:wrap;margin-top:6px">'
     +['S1','S2','S3','S4'].map(function(s){
-      var c=sevColors[s]; var on=activeSevs.indexOf(s)>=0;
-      return '<span data-sev="'+s+'" style="font-size:11px;padding:3px 8px;border-radius:12px;font-family:var(--font-mono);font-weight:600;cursor:pointer;border:2px solid '+c+';color:'+c+';background:'+(on?'rgba('+hexToRgb(c)+',0.15)':'transparent')+'">'+s+' '+sevCounts[s]+'</span>';
+      var c=sevColors[s];
+      var on=activeSevs.indexOf(s)>=0;
+      var cnt=(_sevCountsCache&&_sevCountsCache[s]>0)?_sevCountsCache[s]:sevCounts[s];
+      return '<span data-sev="'+s+'" style="font-size:11px;padding:3px 9px;border-radius:12px;font-family:var(--font-mono);font-weight:600;cursor:pointer;border:2px solid '+c+';color:'+c+';background:'+(on?'rgba('+hexToRgb(c)+',0.18)':'transparent')+';transition:all .15s">'+(on?'\u2713 ':'')+s+' \xb7 '+cnt+'</span>';
     }).join('')
     +'</div>'
-    +(activeSevs.length?'<div style="font-size:10px;color:var(--text3);margin-top:4px;cursor:pointer" onclick="clearSevFilter()">Clear &times;</div>':'')
+  +(activeSevs.length?'<div style="font-size:10px;color:var(--text3);margin-top:5px;cursor:pointer" onclick="clearSevFilter()">Clear filter ×</div>':'<div style="font-size:10px;color:var(--text3);margin-top:5px">click to filter</div>')
     +'</div>';
+
   document.getElementById('kpi-row').innerHTML=kpis.map(function(k,i){
     var fkey = kpiFilters[i]||'';
     var extraStyle = (activeFilter===fkey && fkey) ? 'border-color:var(--blue);box-shadow:0 0 0 2px rgba(59,130,246,0.3);cursor:pointer' : (fkey ? 'cursor:pointer' : '');
     var dataAttr = fkey ? ' data-filter="'+fkey+'"' : '';
     return '<div class="kpi '+k.c+'" style="'+extraStyle+'"'+dataAttr+'><div class="kpi-l">'+k.l+'</div><div class="kpi-v">'+k.v+'</div><div class="kpi-s">'+k.s+(fkey?' &darr;':'')+'</div></div>';
-  }).join('');
+  }).join('')+sevCard;
 
   var grid=document.getElementById('themes-grid');
   var noT=document.getElementById('no-themes');
@@ -2494,6 +2620,9 @@ function buildEpicRow(themeId,e){
   var s=e.stories||{done:0,inprog:0,todo:0,blocked:0,total:0};
   var pct=s.total>0?Math.round(s.done/s.total*100):0;
   var outstanding=s.total-s.done;
+  // Check if current quarter has a program label — use it for top bar
+  var _progLabel = activeQuarterKey!=='__all__' ? getQuarterProgramLabel(activeQuarterKey) : '';
+  var _labelData = _progLabel ? countLabelledStories(e.storyList, _progLabel) : null;
   var pureInp=Math.max(0,(s.inprog||0)-(s.review||0)-(s.testing||0));
   var doneW=s.total>0?(s.done/s.total*100):0;
   var inpW=s.total>0?(pureInp/s.total*100):0;
@@ -2963,6 +3092,7 @@ async function refreshEpic(themeId,key){
   } catch(e){ setStatus('Error: '+e.message,'error'); }
 }
 async function refreshAllEpics(){
+  _sevCountsCache = null; // reset sev cache on refresh
   var aq=getActiveQuarter();
   if(aq.end&&new Date(aq.end+'T23:59:59')<new Date()){
     if(!confirm(aq.label+' has ended. Refreshing will update epics to current Jira state. Continue?')) return;
@@ -2997,6 +3127,7 @@ async function fetchEpicData(key){
   var lbls=(aqf.storyLabels&&aqf.storyLabels.length)?aqf.storyLabels:(aqf.storyLabel?[aqf.storyLabel]:[]);
   var lblF=lbls.length?' AND labels in ('+lbls.map(function(l){return '"'+l+'"';}).join(',')+')'  :'';
   var sevFilter=getSeverityFilter();
+  // S1/S2/S3/S4 stored in customfield_10040 as exact values
   var sevF=sevFilter.length?' AND cf[10040] in ('+sevFilter.map(function(s){return '"'+s+'"';}).join(',')+')'  :'';
   var storiesJql='parent="'+key+'"'+lblF+sevF+' ORDER BY status ASC';
   var storiesResp=await jiraGet('/rest/api/3/search/jql?jql='+encodeURIComponent(storiesJql)+'&fields=summary,status,priority,assignee,customfield_10033,customfield_10040,labels,resolutiondate,updated,created,customfield_10039&maxResults=200');
@@ -4064,6 +4195,7 @@ function renderSettings(){
   var aq = key ? state.quarters[key] : {};
   document.getElementById('set-quarter').value=(aq&&aq.label)||'';
   document.getElementById('set-qstart').value=(aq&&aq.start)||'';
+  var plEl=document.getElementById('set-program-label'); if(plEl){ plEl.value=(aq&&aq.programLabel)||''; initProgramLabelAutocomplete(); }
   document.getElementById('set-qend').value=(aq&&aq.end)||'';
   initLabelTagWidget('set', (aq&&aq.storyLabels)||[]);
   renderSevPills();
@@ -4177,10 +4309,10 @@ async function summarizeEpic(themeId, key) {
   }
 }
 document.addEventListener('click', function(e){
-  var sev = e.target.closest('[data-sev]');
-  if(sev){ e.stopPropagation(); toggleSevKpiFilter(sev.getAttribute('data-sev')); return; }
   var kpi = e.target.closest('[data-filter]');
   if(kpi){ setKpiFilter(kpi.getAttribute('data-filter')); }
+  var sevBadge = e.target.closest('[data-sev]');
+  if(sevBadge){ toggleSevKpiFilter(sevBadge.getAttribute('data-sev')); }
 });
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -4491,9 +4623,9 @@ function switchToQuarterFromSettings(key){
   activeQuarterKey=key; renderAll(); renderQuarterSwitcher();
   var aq=getActiveQuarter();
   var e1=document.getElementById('set-quarter'); if(e1) e1.value=aq.label||'';
-  var e2=document.getElementById('set-qstart'); if(e2) e2.value=aq.start||''
-  var plEl=document.getElementById('set-program-label'); if(plEl) plEl.value=(aq&&aq.programLabel)||'';;
+  var e2=document.getElementById('set-qstart'); if(e2) e2.value=aq.start||'';
   var e3=document.getElementById('set-qend');   if(e3) e3.value=aq.end||'';
+  var plEl2=document.getElementById('set-program-label'); if(plEl2){ plEl2.value=aq.programLabel||''; initProgramLabelAutocomplete(); }
   initLabelTagWidget('set',aq.storyLabels||[]); renderSevPills();
   var planningTab=document.getElementById('tab-planning');
   if(planningTab&&planningTab.classList.contains('active')) plRenderAll();
@@ -4590,7 +4722,7 @@ function buildEpicCompletionChart(epics, title, subtitle){
       sd={total:sl.length,done:sl.filter(function(s){return s.statusCat==='done';}).length};
     } else {sd=e.stories||{};}
     var tot=sd.total||0, dn=sd.done||0;
-    return {key:e.key,done:dn,total:tot,pct:tot>0?Math.round(dn/tot*100):0,theme:e._themeName||'',color:e._themeColor||'#3b82f6'};
+    return {key:e.key,title:e.title||e.key,done:dn,total:tot,pct:tot>0?Math.round(dn/tot*100):0,theme:e._themeName||'',color:e._themeColor||'#3b82f6'};
   });
   rows.sort(function(a,b){return b.pct-a.pct;});
   return '<div style="background:var(--bg2);border:0.5px solid var(--border);border-radius:12px;padding:12px 16px;margin-top:12px">'
@@ -4602,9 +4734,9 @@ function buildEpicCompletionChart(epics, title, subtitle){
       return '<div style="display:grid;grid-template-columns:280px 1fr 48px 46px;align-items:center;gap:10px;padding:2px 0;border-bottom:none">'
         +'<div style="display:flex;align-items:center;gap:6px;min-width:0;overflow:hidden">'
         +'<span style="width:7px;height:7px;border-radius:50%;background:'+r.color+';flex-shrink:0;display:inline-block"></span>'
-        +'<a href="https://riversidejira.atlassian.net/browse/'+r.key+'" target="_blank" style="font-family:var(--font-mono);font-size:10px;color:var(--blue);text-decoration:none;white-space:nowrap;flex-shrink:0">'+escHtml(r.key)+'</a>'
-        +'<span style="font-size:11px;color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+escHtml(r.title)+'">'+escHtml(r.title)+'</span>'
-        +'<span style="font-size:9px;color:var(--text3);white-space:nowrap;flex-shrink:0;font-family:var(--font-mono);background:var(--bg3);padding:1px 5px;border-radius:4px">'+escHtml(r.theme)+'</span>'
+        +'<a href="https://riversidejira.atlassian.net/browse/'+r.key+'" target="_blank" style="font-family:var(--font-mono);font-size:10px;color:var(--blue);text-decoration:none;white-space:nowrap;flex-shrink:0" title="'+escHtml(r.key)+'">'+escHtml(r.key)+'</a>'
+        +'<span style="font-size:11px;color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1" title="'+escHtml(r.title)+'">'+escHtml(r.title)+'</span>'
+        +'<span style="font-size:9px;color:var(--text3);white-space:nowrap;flex-shrink:0;font-family:var(--font-mono);background:var(--bg3);padding:1px 5px;border-radius:4px;border:0.5px solid var(--border)">'+escHtml(r.theme)+'</span>'
         +'</div>'
         +'<div style="height:6px;background:rgba(255,255,255,0.06);border-radius:3px;overflow:hidden">'
         +'<div style="height:100%;width:'+r.pct+'%;background:'+r.color+';border-radius:3px;opacity:0.85"></div>'
@@ -4730,12 +4862,13 @@ function qStatus(k){
 }
 
 
-
 function getQuarterProgramLabel(k){
   var q=state.quarters[k]; if(!q) return '';
   return (q.programLabel||'').trim();
 }
-function countLabelledStories(storyList,label){
+
+// Count stories tagged with a program label across an epic
+function countLabelledStories(storyList, label){
   if(!label||!storyList||!storyList.length) return null;
   var filtered=storyList.filter(function(s){return (s.labels||[]).indexOf(label)>=0;});
   if(!filtered.length) return null;
@@ -4744,37 +4877,311 @@ function countLabelledStories(storyList,label){
   var done=filtered.filter(function(s){return s.statusCat==='done'&&CANC.indexOf(s.status)<0;}).length;
   return {total:total,done:done,pct:total>0?Math.round(done/total*100):0};
 }
+
+
+function renderAllQuartersInline(){
+  var containerId='all-quarters-inline';
+  var existing=document.getElementById(containerId);
+  var tabThemes=document.getElementById('tab-themes');
+  if(!tabThemes) return;
+
+  // Gather data
+  var keys=sortedQuarterKeys();
+  var CANC=['Cancelled','Canceled','Postponed'];
+  var totalDone=0,totalOutstanding=0,totalAtRisk=0,totalStories=0,totalEpics=0;
+  var aM={}, themeColors={}, themeOrder=[];
+  keys.forEach(function(k){
+    (state.quarters[k].themes||[]).forEach(function(t){
+      var nk=(t.name||'').trim().toLowerCase();
+      if(!aM[nk]){aM[nk]={name:t.name,color:t.color||'#6366f1',done:0,total:0};themeOrder.push(nk);}
+      (t.epics||[]).forEach(function(e){
+        var sd=epicStoriesData(e);
+        aM[nk].done+=sd.done||0;
+        aM[nk].total+=sd.total||0;
+        totalEpics++;
+        totalAtRisk+=(e.stories&&e.stories.blocked)||0;
+      });
+    });
+  });
+  Object.keys(aM).forEach(function(nk){
+    totalDone+=aM[nk].done;
+    totalStories+=aM[nk].total;
+  });
+  totalOutstanding=totalStories-totalDone;
+  var overallPct=totalStories>0?Math.round(totalDone/totalStories*100):0;
+  var overallColor=overallPct>=75?'#22c55e':overallPct>=40?'#f59e0b':'#ef4444';
+
+  // Gantt timeline
+  var ganttStart=new Date(state.quarters[keys[0]].start+'T00:00:00');
+  var ganttEnd=new Date(state.quarters[keys[keys.length-1]].end+'T23:59:59');
+  var ganttTotal=ganttEnd-ganttStart;
+  var tNow=new Date();
+  var todayPct=Math.min(100,Math.max(0,(tNow-ganttStart)/ganttTotal*100));
+
+  // KPI cards
+  var html='<div id="'+containerId+'" style="margin-top:0">';
+  html+='<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px">';
+  var kpis=[
+    {label:'Overall',val:overallPct+'%',sub:'stories complete',color:overallColor},
+    {label:'Stories done',val:totalDone,sub:'across all epics',color:'#22c55e'},
+    {label:'Outstanding',val:totalOutstanding,sub:'stories remaining',color:'#f59e0b'},
+    {label:'At risk',val:totalAtRisk,sub:'high+ priority open',color:'#ef4444'},
+  ];
+  kpis.forEach(function(k){
+    html+='<div style="background:var(--bg2);border:0.5px solid var(--border);border-radius:8px;padding:12px 14px">'
+      +'<div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.5px;font-family:var(--font-mono)">'+k.label+'</div>'
+      +'<div style="font-size:22px;font-weight:500;color:'+k.color+';margin:4px 0">'+k.val+'</div>'
+      +'<div style="font-size:11px;color:var(--text3)">'+k.sub+'</div>'
+      +'</div>';
+  });
+  html+='</div>';
+
+  // Cumulative table
+  html+='<div style="background:var(--bg2);border:0.5px solid var(--border);border-radius:12px;overflow:hidden">';
+  // Header
+  html+='<div style="display:grid;grid-template-columns:150px 1fr 56px 70px 80px;gap:12px;padding:10px 16px;background:var(--bg3);border-bottom:0.5px solid var(--border)">';
+  ['Theme','Overall progress — hover markers for dates','Done','Stories','Status'].forEach(function(h,i){
+    html+='<span style="font-size:10px;color:var(--text3);font-family:var(--font-mono);text-transform:uppercase;letter-spacing:0.5px'+(i>1?';text-align:right':'')+'">'+h+'</span>';
+  });
+  html+='</div>';
+
+  // Theme rows
+  themeOrder.forEach(function(nk){
+    var t=aM[nk];
+    var p=t.total>0?Math.round(t.done/t.total*100):0;
+    var pC=p>=75?'#22c55e':p>=40?'#f59e0b':'#ef4444';
+
+    // Status calculation
+    var themeKeys2=keys.filter(function(k){
+      var found=false;
+      (state.quarters[k].themes||[]).forEach(function(th){if((th.name||'').trim().toLowerCase()===nk)found=true;});
+      return found;
+    });
+    var latestQKey=themeKeys2[themeKeys2.length-1];
+    var latestQ=latestQKey?state.quarters[latestQKey]:null;
+    var qStat=latestQKey?qStatus(latestQKey):'future';
+    var stLabel,stBg,stColor,stTip='';
+
+    if(!latestQ){
+      stLabel='No data';stBg='rgba(100,116,139,0.1)';stColor='#64748b';stTip='No quarter data';
+    } else if(qStat==='future'){
+      stLabel='Upcoming';stBg='rgba(59,130,246,0.1)';stColor='#3b82f6';stTip='Quarter has not started yet';
+    } else if(qStat==='past'){
+      if(p>=80){stLabel='Completed';stBg='rgba(34,197,94,0.1)';stColor='#22c55e';}
+      else if(p>=50){stLabel='Partial';stBg='rgba(245,158,11,0.1)';stColor='#f59e0b';}
+      else{stLabel='Incomplete';stBg='rgba(239,68,68,0.1)';stColor='#ef4444';}
+      stTip='Quarter closed — final: '+p+'%';
+    } else {
+      var qStartD=latestQ.start?new Date(latestQ.start+'T00:00:00'):tNow;
+      var qEndD=latestQ.end?new Date(latestQ.end+'T23:59:59'):tNow;
+      var elapsed=Math.min(1,Math.max(0,(tNow-qStartD)/(qEndD-qStartD)));
+      var expPct=Math.round(elapsed*100);
+      var qlabel=getQuarterProgramLabel(latestQKey);
+      var qDoneU=0,qTotalU=0;
+      if(qlabel){
+        (state.quarters[latestQKey].themes||[]).forEach(function(th){
+          if((th.name||'').trim().toLowerCase()===nk){
+            (th.epics||[]).forEach(function(e){
+              var ld=countLabelledStories(e.storyList,qlabel);
+              if(ld){qTotalU+=ld.total;qDoneU+=ld.done;}
+            });
+          }
+        });
+      } else {
+        (state.quarters[latestQKey].themes||[]).forEach(function(th){
+          if((th.name||'').trim().toLowerCase()===nk){
+            (th.epics||[]).forEach(function(e){var sd=e.storiesAll||e.stories||{};qTotalU+=sd.total||0;qDoneU+=sd.done||0;});
+          }
+        });
+      }
+      var qPctU=qTotalU>0?Math.round(qDoneU/qTotalU*100):0;
+      var gap=qPctU-expPct;
+      stTip=(qlabel?'“'+qlabel+'” basis':'Overall basis')+' — '+qDoneU+'/'+qTotalU+' done ('+qPctU+'%) • Time elapsed: '+expPct+'% • Gap: '+(gap>=0?'+'+gap:gap)+'pts';
+      if(qPctU>=expPct-8){stLabel='On pace';stBg='rgba(34,197,94,0.1)';stColor='#22c55e';}
+      else if(qPctU>=expPct-25){stLabel='At risk';stBg='rgba(245,158,11,0.1)';stColor='#f59e0b';}
+      else{stLabel='Behind';stBg='rgba(239,68,68,0.1)';stColor='#ef4444';}
+    }
+
+    // Bar with milestone markers
+    var bar='<div style="position:relative;height:8px;background:rgba(255,255,255,0.06);border-radius:4px;overflow:visible">'
+      +'<div style="position:absolute;left:0;top:0;height:100%;width:'+p+'%;background:'+t.color+';border-radius:4px;opacity:0.85"></div>';
+    keys.forEach(function(k,ki){
+      var qEnd=new Date(state.quarters[k].end+'T23:59:59');
+      var qPct2=Math.min(100,Math.max(0,(qEnd-ganttStart)/ganttTotal*100));
+      var mColor='rgba(148,163,184,'+(ki===0?'0.7':'0.4')+')';
+      var qEndStr=new Date(state.quarters[k].end+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
+      bar+='<div style="position:absolute;left:'+qPct2+'%;top:-6px;bottom:-6px;width:12px;transform:translateX(-50%);cursor:pointer;z-index:2;display:flex;justify-content:center" data-tip="'+escHtml(state.quarters[k].label)+' end · '+escHtml(qEndStr)+'">'
+        +'<div style="width:2px;height:100%;background:'+mColor+'"></div>'
+        +'<div class="aq-tip"></div></div>';
+    });
+    bar+='<div style="position:absolute;left:'+todayPct+'%;top:-6px;bottom:-6px;width:12px;transform:translateX(-50%);cursor:pointer;z-index:3;display:flex;justify-content:center" data-tip="Today · '+escHtml(tNow.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}))+'">'
+      +'<div style="width:2px;height:100%;background:#3b82f6;border-radius:1px"></div>'
+      +'<div class="aq-tip"></div></div>';
+    bar+='</div>';
+
+    html+='<div style="display:grid;grid-template-columns:150px 1fr 56px 70px 80px;gap:12px;align-items:center;padding:10px 16px;border-bottom:0.5px solid rgba(255,255,255,0.04)">'
+      +'<div style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:500;color:var(--text);overflow:hidden">'
+      +'<div style="width:7px;height:7px;border-radius:50%;background:'+t.color+';flex-shrink:0"></div>'
+      +'<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+escHtml(t.name)+'</span></div>'
+      +bar
+      +'<div style="font-family:var(--font-mono);font-size:12px;font-weight:600;text-align:right;color:'+pC+'">'+p+'%</div>'
+      +'<div style="font-size:10px;text-align:right;color:var(--text3)">'+t.done+'/'+t.total+'</div>'
+      +'<div style="text-align:right;position:relative" class="aq-st-wrap">'
+      +'<span style="font-size:10px;padding:2px 8px;border-radius:8px;font-weight:500;background:'+stBg+';color:'+stColor+';cursor:help;border-bottom:1px dashed '+stColor+'">'+stLabel+'</span>'
+      +'<div class="aq-st-tip" style="position:absolute;right:0;bottom:calc(100% + 6px);background:var(--bg2);border:0.5px solid var(--border2);border-radius:8px;padding:8px 10px;font-size:10px;color:var(--text);white-space:nowrap;opacity:0;pointer-events:none;transition:opacity 0.15s;z-index:20;line-height:1.6;font-family:var(--font-mono)">'+escHtml(stTip)+'</div>'
+      +'</div>'
+      +'</div>';
+  });
+
+  // Legend
+  html+='<div style="display:flex;gap:16px;padding:10px 16px;border-top:0.5px solid var(--border)">'
+    +'<div style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text3)"><div style="width:2px;height:12px;border-radius:1px;background:#3b82f6"></div>Today</div>'
+    +'<div style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text3)"><div style="width:1.5px;height:12px;background:rgba(148,163,184,0.5)"></div>Quarter end (hover)</div>'
+    +'<div style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text3);font-style:italic">Hover status for details</div>'
+    +'</div>';
+  html+='</div></div>';
+
+  if(existing){existing.outerHTML=html;}
+  else{
+    // Insert inside tab-themes, after kpi-row-all div
+    var kraEl=document.getElementById('kpi-row-all');
+    if(kraEl) kraEl.insertAdjacentHTML('afterend',html);
+    else{var tt=document.getElementById('tab-themes'); if(tt) tt.insertAdjacentHTML('afterbegin',html);}
+  }
+}
+
+
+function initProgramLabelAutocomplete(){
+  var input = document.getElementById('set-program-label');
+  if(!input || input._acInit) return;
+  input._acInit = true;
+
+  function getOrCreateDropdown(){
+    var s = document.getElementById('program-label-suggestions');
+    if(!s){
+      s = document.createElement('div');
+      s.id = 'program-label-suggestions';
+      s.style.cssText = 'position:fixed;z-index:99999;background:#0f1520;border:0.5px solid #3b82f6;border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,0.6);min-width:220px;max-height:220px;overflow-y:auto;display:none';
+      document.body.appendChild(s);
+    }
+    return s;
+  }
+
+  function showPLSuggestions(q){
+    var s = getOrCreateDropdown();
+    var matches = JIRA_LABELS.filter(function(l){ return l.toLowerCase().indexOf((q||'').toLowerCase()) >= 0; });
+    if(!matches.length){ s.style.display='none'; return; }
+    var qi = (q||'').replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+    s.innerHTML = matches.slice(0,30).map(function(l){
+      var safe = escHtml(l);
+      var hi = qi ? safe.replace(new RegExp('('+qi+')', 'gi'), '<strong style="color:#93c5fd">$1</strong>') : safe;
+      return '<div style="padding:9px 14px;font-size:12px;cursor:pointer;color:#e2e8f0;border-bottom:0.5px solid rgba(255,255,255,0.06);font-family:var(--font-mono)" data-val="'+safe+'">'+hi+'</div>';
+    }).join('');
+    var rect = input.getBoundingClientRect();
+    var sugH = Math.min(matches.length * 38, 220);
+    var flipUp = (rect.bottom + sugH + 8) > window.innerHeight;
+    s.style.left = rect.left + 'px';
+    s.style.width = Math.max(220, rect.width) + 'px';
+    s.style.top = flipUp ? 'auto' : (rect.bottom + 4) + 'px';
+    s.style.bottom = flipUp ? (window.innerHeight - rect.top + 4) + 'px' : 'auto';
+    s.style.display = 'block';
+    s.onmousedown = function(e){
+      var item = e.target.closest('[data-val]');
+      if(item){ e.preventDefault(); input.value = item.getAttribute('data-val'); s.style.display='none'; }
+    };
+  }
+
+  input.oninput = function(){ showPLSuggestions(input.value.trim()); };
+  input.onfocus = function(){ if(input.value.length > 0) showPLSuggestions(input.value.trim()); };
+  input.onkeydown = function(e){
+    if(e.key==='Escape'){ var s=document.getElementById('program-label-suggestions'); if(s) s.style.display='none'; }
+  };
+  input.onblur = function(){ setTimeout(function(){ var s=document.getElementById('program-label-suggestions'); if(s) s.style.display='none'; }, 150); };
+}
+
+
+// Silent background refresh — shows cached data first, then updates silently
+async function backgroundRefreshAll(){
+  var keys = sortedQuarterKeys();
+  if(!keys.length) return;
+  console.log('[AutoRefresh] Starting background refresh for', keys.length, 'quarters');
+  setStatus('Auto-refreshing epics in background…', 'loading');
+
+  for(var qi=0; qi<keys.length; qi++){
+    var k = keys[qi];
+    var q = state.quarters[k];
+    var themes = q.themes || [];
+    var all = [];
+    themes.forEach(function(t){ (t.epics||[]).forEach(function(e){ all.push({qKey:k, themeId:t.id, key:e.key}); }); });
+    if(!all.length) continue;
+
+    // Save active quarter, switch to this one to fetch correctly
+    var prevKey = activeQuarterKey;
+    activeQuarterKey = k;
+
+    for(var i=0; i<all.length; i++){
+      try{
+        var data = await fetchEpicData(all[i].key);
+        var theme = (state.quarters[k].themes||[]).find(function(t){ return t.id===all[i].themeId; });
+        var ep = theme&&theme.epics.find(function(e){ return e.key===all[i].key; });
+        if(ep) Object.assign(ep, data);
+      } catch(e){ console.warn('[AutoRefresh] Skip', all[i].key, e.message); }
+    }
+    activeQuarterKey = prevKey;
+  }
+
+  persist();
+  renderAll();
+  setStatus('Epics auto-refreshed', 'ok');
+  console.log('[AutoRefresh] Complete');
+}
+
+
 function hexToRgb(hex){
   var r=parseInt(hex.slice(1,3),16),g=parseInt(hex.slice(3,5),16),b=parseInt(hex.slice(5,7),16);
   return r+','+g+','+b;
 }
+
+
+var _sevCountsCache = null;
+async function fetchSevCountsFromJira(){
+  if(_sevCountsCache) return; // already fetching or cached
+  try {
+    var counts = {S1:0,S2:0,S3:0,S4:0};
+    var aq = getActiveQuarter();
+    var epicKeys = [];
+    getActiveThemes().forEach(function(t){(t.epics||[]).forEach(function(e){epicKeys.push(e.key);});});
+    if(!epicKeys.length) return;
+    var epicsJql = 'parent in ('+epicKeys.map(function(k){return '"'+k+'"';}).join(',')+') AND statusCategory != Done AND status not in (Cancelled, Canceled, Postponed) AND cf[10040] is not EMPTY';
+    var resp = await jiraGet('/rest/api/3/search/jql?jql='+encodeURIComponent(epicsJql)+'&fields=customfield_10040&maxResults=500');
+    (resp.issues||[]).forEach(function(i){
+      var sv = i.fields&&i.fields.customfield_10040&&i.fields.customfield_10040.value;
+      if(sv&&counts.hasOwnProperty(sv)) counts[sv]++;
+    });
+    _sevCountsCache = counts;
+    // Update the KPI sev card with real counts
+    var kpiRow = document.getElementById('kpi-row');
+    if(!kpiRow) return;
+    var sevCard = kpiRow.querySelector('.sev-kpi-card');
+    if(sevCard){
+      var sevColors={S1:'#f87171',S2:'#fbbf24',S3:'#60a5fa',S4:'#a78bfa'};
+      var activeSevs2=getSeverityFilter();
+      sevCard.querySelector('.sev-badges').innerHTML = ['S1','S2','S3','S4'].map(function(s){
+        var c=sevColors[s]; var on=activeSevs2.indexOf(s)>=0;
+        return '<span data-sev="'+s+'" style="font-size:11px;padding:3px 9px;border-radius:12px;font-family:var(--font-mono);font-weight:600;cursor:pointer;border:2px solid '+c+';color:'+c+';background:'+(on?'rgba('+hexToRgb(c)+',0.18)':'transparent')+';transition:all .15s">'+(on?'&#10003; ':'')+s+' · '+counts[s]+'</span>';
+      }).join('');
+    }
+  } catch(e){ console.warn('fetchSevCountsFromJira:', e.message); }
+}
+
+
 function clearSevFilter(){
   var key=(activeQuarterKey&&activeQuarterKey!=='__all__')?activeQuarterKey:sortedQuarterKeys().pop();
-  if(key) state.quarters[key].severityFilter=[];
+  if(key){ state.quarters[key].severityFilter=[]; }
   activeFilter=null;
   persist();
   var fp=document.getElementById('filter-panel'); if(fp) fp.style.display='none';
-  renderAll();
-}
-function toggleSevKpiFilter(sev){
-  var key=(activeQuarterKey&&activeQuarterKey!=='__all__')?activeQuarterKey:sortedQuarterKeys().pop();
-  var fkey='sev-'+sev;
-  var wasActive=(activeFilter===fkey);
-  // Reset
-  if(key) state.quarters[key].severityFilter=[];
-  activeFilter=null;
-  persist();
-  var fp=document.getElementById('filter-panel');
-  if(wasActive){ if(fp) fp.style.display='none'; renderAll(); return; }
-  // Activate
-  if(key){ state.quarters[key].severityFilter=[sev]; persist(); }
-  activeFilter=fkey;
-  renderAll();
-  setTimeout(function(){
-    renderFilterPanel(fkey);
-    var fp2=document.getElementById('filter-panel');
-    if(fp2){ fp2.style.display='block'; fp2.scrollIntoView({behavior:'smooth',block:'nearest'}); }
-  },150);
+  renderAll(); // re-render everything including KPI bar
 }
 
 function bootApp(){
@@ -4783,6 +5190,8 @@ function bootApp(){
 
   setTimeout(fetchJiraLabels, 2000); // fetch fresh labels from Jira on boot
   renderAll(); setSyncBadge(false); setStatus('Ready','ok');
+  // Auto-refresh epics silently in background after Firebase connects
+  setTimeout(function(){ backgroundRefreshAll(); }, 3000);
   setTimeout(function(){
     if(window.__firebaseReady){ setSyncBadge(true); setStatus('Connected - Firebase syncing','ok'); }
     else { setStatus('Local mode - Firebase connecting...','ok'); }
