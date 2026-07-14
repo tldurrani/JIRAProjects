@@ -2324,16 +2324,21 @@ function renderThemes(){
   document.getElementById('hdr-sub').textContent=getActiveQuarter().label+' - '+weeksLeft()+' weeks remaining - '+totalEpics+' epics tracked';
   document.getElementById('themes-label').textContent=themes.length+' Theme'+(themes.length!==1?'s':'')+' - '+totalEpics+' Epics';
 
-  // Count stories by severity across all epics
+  // Count stories by severity from storyList (populated after Refresh Epics)
   var sevCounts={S1:0,S2:0,S3:0,S4:0};
+  var CANC_SEV=['Cancelled','Canceled','Postponed'];
   allEpics.forEach(function(e){
-    var CANC=['Cancelled','Canceled','Postponed'];
     ((e.storyList)||[]).forEach(function(s){
-      if(CANC.indexOf(s.status)>=0||s.statusCat==='done') return;
-      var sv=s.severity; // from customfield_10040
+      if(CANC_SEV.indexOf(s.status)>=0||s.statusCat==='done') return;
+      var sv=s.severity;
       if(sv&&sevCounts.hasOwnProperty(sv)) sevCounts[sv]++;
     });
   });
+  // If all zero, fetch live counts from Jira async and re-render when done
+  var sevTotal=sevCounts.S1+sevCounts.S2+sevCounts.S3+sevCounts.S4;
+  if(sevTotal===0){
+    fetchSevCountsFromJira();
+  }
   var activeSevs=getSeverityFilter();
 
   var kpis=[
@@ -2352,15 +2357,15 @@ function renderThemes(){
 
   // Build severity KPI card
   var sevColors={S1:'#f87171',S2:'#fbbf24',S3:'#60a5fa',S4:'#a78bfa'};
-  var sevCard='<div class="kpi" style="cursor:default"><div class="kpi-l">Severity bugs</div>'
-    +'<div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:6px">'
+  var sevCard='<div class="kpi sev-kpi-card" style="cursor:default"><div class="kpi-l">Severity bugs</div>'
+    +'<div class="sev-badges" style="display:flex;gap:5px;flex-wrap:wrap;margin-top:6px">'
     +['S1','S2','S3','S4'].map(function(s){
       var c=sevColors[s];
       var on=activeSevs.indexOf(s)>=0;
       return '<span data-sev="'+s+'" style="font-size:11px;padding:3px 9px;border-radius:12px;font-family:var(--font-mono);font-weight:600;cursor:pointer;border:2px solid '+c+';color:'+c+';background:'+(on?'rgba('+hexToRgb(c)+',0.18)':'transparent')+';transition:all .15s">'+(on?'\u2713 ':'')+s+' · '+sevCounts[s]+'</span>';
     }).join('')
     +'</div>'
-  +(activeSevs.length?'<div style="font-size:10px;color:var(--text3);margin-top:5px;cursor:pointer" data-sev="'+activeSevs[0]+'" onclick="toggleSevKpiFilter(this.getAttribute(\"data-sev\"))">Clear filter &times;</div>':'<div style="font-size:10px;color:var(--text3);margin-top:5px">click to filter ↓</div>')
+  +(activeSevs.length?'<div style="font-size:10px;color:var(--text3);margin-top:5px;cursor:pointer" onclick="clearSevFilter()">Clear filter ×</div>':'<div style="font-size:10px;color:var(--text3);margin-top:5px">click to filter</div>')
     +'</div>';
 
   document.getElementById('kpi-row').innerHTML=kpis.map(function(k,i){
@@ -3037,6 +3042,7 @@ async function refreshEpic(themeId,key){
   } catch(e){ setStatus('Error: '+e.message,'error'); }
 }
 async function refreshAllEpics(){
+  _sevCountsCache = null; // reset sev cache on refresh
   var aq=getActiveQuarter();
   if(aq.end&&new Date(aq.end+'T23:59:59')<new Date()){
     if(!confirm(aq.label+' has ended. Refreshing will update epics to current Jira state. Continue?')) return;
@@ -5086,6 +5092,47 @@ function hexToRgb(hex){
   return r+','+g+','+b;
 }
 
+
+var _sevCountsCache = null;
+async function fetchSevCountsFromJira(){
+  if(_sevCountsCache) return; // already fetching or cached
+  try {
+    var counts = {S1:0,S2:0,S3:0,S4:0};
+    var aq = getActiveQuarter();
+    var epicKeys = [];
+    getActiveThemes().forEach(function(t){(t.epics||[]).forEach(function(e){epicKeys.push(e.key);});});
+    if(!epicKeys.length) return;
+    var epicsJql = 'parent in ('+epicKeys.map(function(k){return '"'+k+'"';}).join(',')+') AND statusCategory != Done AND status not in (Cancelled, Canceled, Postponed) AND cf[10040] is not EMPTY';
+    var resp = await jiraGet('/rest/api/3/search/jql?jql='+encodeURIComponent(epicsJql)+'&fields=customfield_10040&maxResults=500');
+    (resp.issues||[]).forEach(function(i){
+      var sv = i.fields&&i.fields.customfield_10040&&i.fields.customfield_10040.value;
+      if(sv&&counts.hasOwnProperty(sv)) counts[sv]++;
+    });
+    _sevCountsCache = counts;
+    // Update the KPI sev card with real counts
+    var kpiRow = document.getElementById('kpi-row');
+    if(!kpiRow) return;
+    var sevCard = kpiRow.querySelector('.sev-kpi-card');
+    if(sevCard){
+      var sevColors={S1:'#f87171',S2:'#fbbf24',S3:'#60a5fa',S4:'#a78bfa'};
+      var activeSevs2=getSeverityFilter();
+      sevCard.querySelector('.sev-badges').innerHTML = ['S1','S2','S3','S4'].map(function(s){
+        var c=sevColors[s]; var on=activeSevs2.indexOf(s)>=0;
+        return '<span data-sev="'+s+'" style="font-size:11px;padding:3px 9px;border-radius:12px;font-family:var(--font-mono);font-weight:600;cursor:pointer;border:2px solid '+c+';color:'+c+';background:'+(on?'rgba('+hexToRgb(c)+',0.18)':'transparent')+';transition:all .15s">'+(on?'&#10003; ':'')+s+' · '+counts[s]+'</span>';
+      }).join('');
+    }
+  } catch(e){ console.warn('fetchSevCountsFromJira:', e.message); }
+}
+
+
+function clearSevFilter(){
+  var key=(activeQuarterKey&&activeQuarterKey!=='__all__')?activeQuarterKey:sortedQuarterKeys().pop();
+  if(key) state.quarters[key].severityFilter=[];
+  activeFilter=null;
+  persist();
+  var fp=document.getElementById('filter-panel'); if(fp) fp.style.display='none';
+  renderThemes();
+}
 
 function bootApp(){
   // localStorage loaded in new multi-quarter block above
