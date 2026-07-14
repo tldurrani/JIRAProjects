@@ -4930,12 +4930,51 @@ function initProgramLabelAutocomplete(){
 }
 
 
+// Silent background refresh — shows cached data first, then updates silently
+async function backgroundRefreshAll(){
+  var keys = sortedQuarterKeys();
+  if(!keys.length) return;
+  console.log('[AutoRefresh] Starting background refresh for', keys.length, 'quarters');
+  setStatus('Auto-refreshing epics in background…', 'loading');
+
+  for(var qi=0; qi<keys.length; qi++){
+    var k = keys[qi];
+    var q = state.quarters[k];
+    var themes = q.themes || [];
+    var all = [];
+    themes.forEach(function(t){ (t.epics||[]).forEach(function(e){ all.push({qKey:k, themeId:t.id, key:e.key}); }); });
+    if(!all.length) continue;
+
+    // Save active quarter, switch to this one to fetch correctly
+    var prevKey = activeQuarterKey;
+    activeQuarterKey = k;
+
+    for(var i=0; i<all.length; i++){
+      try{
+        var data = await fetchEpicData(all[i].key);
+        var theme = (state.quarters[k].themes||[]).find(function(t){ return t.id===all[i].themeId; });
+        var ep = theme&&theme.epics.find(function(e){ return e.key===all[i].key; });
+        if(ep) Object.assign(ep, data);
+      } catch(e){ console.warn('[AutoRefresh] Skip', all[i].key, e.message); }
+    }
+    activeQuarterKey = prevKey;
+  }
+
+  persist();
+  renderAll();
+  setStatus('Epics auto-refreshed', 'ok');
+  console.log('[AutoRefresh] Complete');
+}
+
+
 function bootApp(){
   // localStorage loaded in new multi-quarter block above
   document.addEventListener('mouseover',function(e){var el=e.target.closest('[data-tip]');if(el){var tip=el.querySelector('.aq-tip');if(tip)tip.textContent=el.getAttribute('data-tip');}});
 
   setTimeout(fetchJiraLabels, 2000); // fetch fresh labels from Jira on boot
   renderAll(); setSyncBadge(false); setStatus('Ready','ok');
+  // Auto-refresh epics silently in background after Firebase connects
+  setTimeout(function(){ backgroundRefreshAll(); }, 3000);
   setTimeout(function(){
     if(window.__firebaseReady){ setSyncBadge(true); setStatus('Connected - Firebase syncing','ok'); }
     else { setStatus('Local mode - Firebase connecting...','ok'); }
