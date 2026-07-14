@@ -1995,24 +1995,22 @@ function setKpiFilter(f){
 }
 
 function toggleSevKpiFilter(sev){
-  // Map sev badge click to a filter key like 'sev-S1'
   var fkey = 'sev-'+sev;
   activeFilter = (activeFilter===fkey) ? null : fkey;
-  // Also sync severityFilter state
   var key=(activeQuarterKey&&activeQuarterKey!=='__all__')?activeQuarterKey:sortedQuarterKeys().pop();
   if(key){
     state.quarters[key].severityFilter = activeFilter ? [sev] : [];
     persist();
   }
   var fp = document.getElementById('filter-panel');
+  renderThemes(); // re-render KPI bar to show active state
   if(!activeFilter){
     if(fp) fp.style.display='none';
-    renderThemes();
     return;
   }
-  renderThemes();
-  renderFilterPanel(activeFilter);
+  // Show panel immediately and load bugs from storyList
   if(fp) fp.style.display='block';
+  renderFilterPanel(activeFilter);
   setTimeout(function(){ if(fp) fp.scrollIntoView({behavior:'smooth',block:'nearest'}); },100);
 }
 
@@ -2119,20 +2117,24 @@ function renderFilterPanel(filter){
   } else if(filter && filter.indexOf('sev-')===0){
     var sevKey = filter.replace('sev-',''); // e.g. 'S1'
     var sevColor = {S1:'#f87171',S2:'#fbbf24',S3:'#60a5fa',S4:'#a78bfa'}[sevKey]||'#6b7280';
-    title.textContent = sevKey + ' Bugs (customfield_10040 = '+sevKey+')';
+    title.textContent = sevKey + ' Severity Bugs';
 
     var allEpics2=[]; getActiveThemes().forEach(function(t){(t.epics||[]).forEach(function(e){allEpics2.push({epic:e,theme:t});});});
     var matched=[];
     allEpics2.forEach(function(item){
       var e=item.epic;
+      var CANC2=['Cancelled','Canceled','Postponed'];
       var sevStories=(e.storyList||[]).filter(function(s){
-        return s.severity===sevKey && s.statusCat!=='done' && ['Cancelled','Canceled','Postponed'].indexOf(s.status)<0;
+        if(CANC2.indexOf(s.status)>=0||s.statusCat==='done') return false;
+        // If severity field populated, use it; otherwise show all outstanding (epic was fetched filtered)
+        if(s.severity) return s.severity===sevKey;
+        return true; // fallback: all outstanding stories (epic fetched with sev JQL filter)
       });
       if(sevStories.length) matched.push({epic:e,theme:item.theme,stories:sevStories});
     });
 
     countEl.textContent = matched.reduce(function(a,m){return a+m.stories.length;},0)+' '+sevKey+' stories across '+matched.length+' epics';
-    if(!matched.length){body.innerHTML='<div style="color:var(--green);font-size:13px;padding:8px 0">No open '+sevKey+' stories!</div>';return;}
+    if(!matched.length){body.innerHTML='<div style="font-size:13px;padding:8px 0;color:var(--text3)">No '+sevKey+' stories found in current data. <br><button class="btn btn-sm" style="margin-top:8px" onclick="refreshAllEpics()">&#8635; Refresh Epics to load severity data</button></div>';return;}
 
     matched.forEach(function(item){
       var e=item.epic, t=item.theme;
@@ -2358,7 +2360,7 @@ function renderThemes(){
       return '<span data-sev="'+s+'" style="font-size:11px;padding:3px 9px;border-radius:12px;font-family:var(--font-mono);font-weight:600;cursor:pointer;border:2px solid '+c+';color:'+c+';background:'+(on?'rgba('+hexToRgb(c)+',0.18)':'transparent')+';transition:all .15s">'+(on?'\u2713 ':'')+s+' · '+sevCounts[s]+'</span>';
     }).join('')
     +'</div>'
-    +(activeSevs.length?'<div style="font-size:10px;color:var(--text3);margin-top:5px;cursor:pointer" onclick="clearSeverityFilter()">Clear filter &times;</div>':'<div style="font-size:10px;color:var(--text3);margin-top:5px">click to filter</div>')
+  +(activeSevs.length?'<div style="font-size:10px;color:var(--text3);margin-top:5px;cursor:pointer" data-sev="'+activeSevs[0]+'" onclick="toggleSevKpiFilter(this.getAttribute(\"data-sev\"))">Clear filter &times;</div>':'<div style="font-size:10px;color:var(--text3);margin-top:5px">click to filter ↓</div>')
     +'</div>';
 
   document.getElementById('kpi-row').innerHTML=kpis.map(function(k,i){
