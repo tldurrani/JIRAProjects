@@ -222,7 +222,7 @@ function initFirebase(){
       // V1 migration: has themes but no quarters
       if(d.themes&&!d.quarters){
         var mk=labelToKey((d.quarter&&d.quarter.label)||'Q2-2026');
-        state.quarters={}; state.quarters[mk]={label:(d.quarter&&d.quarter.label)||'Q2 2026',start:(d.quarter&&d.quarter.start)||'2026-04-01',end:(d.quarter&&d.quarter.end)||'2026-06-30',storyLabels:[],severityFilter:[],themes:d.themes||[]};
+        state.quarters={}; state.quarters[mk]={label:(d.quarter&&d.quarter.label)||'Q2 2026',start:(d.quarter&&d.quarter.start)||'2026-04-01',end:(d.quarter&&d.quarter.end)||'2026-06-30',storyLabels:[],severityFilter:[],programLabel:'',themes:d.themes||[]};
         state.activeProjects=d.activeProjects||state.activeProjects;
         activeQuarterKey=mk;
         persist();
@@ -4195,7 +4195,14 @@ function renderSettings(){
   var aq = key ? state.quarters[key] : {};
   document.getElementById('set-quarter').value=(aq&&aq.label)||'';
   document.getElementById('set-qstart').value=(aq&&aq.start)||'';
-  var plEl=document.getElementById('set-program-label'); if(plEl){ plEl.value=(aq&&aq.programLabel)||''; initProgramLabelAutocomplete(); }
+  var plEl=document.getElementById('set-program-label');
+  if(plEl){
+    // Use programLabel, or fall back to first storyLabel if programLabel not set yet
+    var plVal=(aq&&aq.programLabel)||'';
+    if(!plVal&&aq&&aq.storyLabels&&aq.storyLabels.length) plVal=aq.storyLabels[0];
+    plEl.value=plVal;
+    initProgramLabelAutocomplete();
+  }
   document.getElementById('set-qend').value=(aq&&aq.end)||'';
   initLabelTagWidget('set', (aq&&aq.storyLabels)||[]);
   renderSevPills();
@@ -4625,7 +4632,13 @@ function switchToQuarterFromSettings(key){
   var e1=document.getElementById('set-quarter'); if(e1) e1.value=aq.label||'';
   var e2=document.getElementById('set-qstart'); if(e2) e2.value=aq.start||'';
   var e3=document.getElementById('set-qend');   if(e3) e3.value=aq.end||'';
-  var plEl2=document.getElementById('set-program-label'); if(plEl2){ plEl2.value=aq.programLabel||''; initProgramLabelAutocomplete(); }
+  var plEl2=document.getElementById('set-program-label');
+  if(plEl2){
+    var plVal2=aq.programLabel||'';
+    if(!plVal2&&aq.storyLabels&&aq.storyLabels.length) plVal2=aq.storyLabels[0];
+    plEl2.value=plVal2;
+    initProgramLabelAutocomplete();
+  }
   initLabelTagWidget('set',aq.storyLabels||[]); renderSevPills();
   var planningTab=document.getElementById('tab-planning');
   if(planningTab&&planningTab.classList.contains('active')) plRenderAll();
@@ -5101,24 +5114,29 @@ function initProgramLabelAutocomplete(){
 
 
 // Silent background refresh — shows cached data first, then updates silently
+var _lastAutoRefresh = 0;
 async function backgroundRefreshAll(){
+  // Cooldown: only auto-refresh once every 30 minutes
+  var now = Date.now();
+  if(now - _lastAutoRefresh < 30 * 60 * 1000){
+    console.log('[AutoRefresh] Skipped — refreshed recently');
+    return;
+  }
   var keys = sortedQuarterKeys();
   if(!keys.length) return;
+  _lastAutoRefresh = now;
   console.log('[AutoRefresh] Starting background refresh for', keys.length, 'quarters');
-  setStatus('Auto-refreshing epics in background…', 'loading');
+  setStatus('Auto-refreshing epics…', 'loading');
 
+  var prevKey = activeQuarterKey;
   for(var qi=0; qi<keys.length; qi++){
     var k = keys[qi];
-    var q = state.quarters[k];
-    var themes = q.themes || [];
+    var themes = state.quarters[k].themes || [];
     var all = [];
     themes.forEach(function(t){ (t.epics||[]).forEach(function(e){ all.push({qKey:k, themeId:t.id, key:e.key}); }); });
     if(!all.length) continue;
 
-    // Save active quarter, switch to this one to fetch correctly
-    var prevKey = activeQuarterKey;
     activeQuarterKey = k;
-
     for(var i=0; i<all.length; i++){
       try{
         var data = await fetchEpicData(all[i].key);
@@ -5127,12 +5145,13 @@ async function backgroundRefreshAll(){
         if(ep) Object.assign(ep, data);
       } catch(e){ console.warn('[AutoRefresh] Skip', all[i].key, e.message); }
     }
-    activeQuarterKey = prevKey;
   }
+  activeQuarterKey = prevKey;
 
+  // Single persist at the end — not per-epic
   persist();
   renderAll();
-  setStatus('Epics auto-refreshed', 'ok');
+  setStatus('Epics refreshed', 'ok');
   console.log('[AutoRefresh] Complete');
 }
 
