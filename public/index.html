@@ -1455,6 +1455,12 @@ function getSeverityFilter(){
   var key=(activeQuarterKey&&activeQuarterKey!=='__all__')?activeQuarterKey:sortedQuarterKeys().pop();
   return (key&&state.quarters[key]&&state.quarters[key].severityFilter)||[];
 }
+function sevFilterMatchesPriority(p){
+  // Map Jira priority to S level, check against active sev filter
+  var sevs=getSeverityFilter(); if(!sevs.length) return true;
+  var map={'Highest':'S1','High':'S2','Medium':'S3','Low':'S4'};
+  return sevs.indexOf(map[p])>=0;
+}
 
 function clearAllLabelsAndSave(){
   var key = (activeQuarterKey && activeQuarterKey !== '__all__') ? activeQuarterKey : sortedQuarterKeys().pop();
@@ -1988,6 +1994,28 @@ function setKpiFilter(f){
   setTimeout(function(){ if(fp) fp.scrollIntoView({behavior:'smooth',block:'nearest'}); }, 100);
 }
 
+function toggleSevKpiFilter(sev){
+  // Map sev badge click to a filter key like 'sev-S1'
+  var fkey = 'sev-'+sev;
+  activeFilter = (activeFilter===fkey) ? null : fkey;
+  // Also sync severityFilter state
+  var key=(activeQuarterKey&&activeQuarterKey!=='__all__')?activeQuarterKey:sortedQuarterKeys().pop();
+  if(key){
+    state.quarters[key].severityFilter = activeFilter ? [sev] : [];
+    persist();
+  }
+  var fp = document.getElementById('filter-panel');
+  if(!activeFilter){
+    if(fp) fp.style.display='none';
+    renderThemes();
+    return;
+  }
+  renderThemes();
+  renderFilterPanel(activeFilter);
+  if(fp) fp.style.display='block';
+  setTimeout(function(){ if(fp) fp.scrollIntoView({behavior:'smooth',block:'nearest'}); },100);
+}
+
 function renderFilterPanel(filter){
   var panel     = document.getElementById('filter-panel');
   var body      = document.getElementById('filter-panel-body');
@@ -2085,6 +2113,56 @@ function renderFilterPanel(filter){
         + '<span style="display:inline-flex;align-items:center;gap:4px"><span style="width:8px;height:8px;border-radius:2px;background:#22c55e;display:inline-block"></span><b style="font-family:var(--font-mono)">'+s.done+'</b>&nbsp;done</span>'
         + (s.blocked>0?'<span style="display:inline-flex;align-items:center;gap:4px;color:#f87171"><span style="width:8px;height:8px;border-radius:2px;background:#ef4444;display:inline-block"></span><b style="font-family:var(--font-mono)">'+s.blocked+'</b>&nbsp;high-priority open</span>':'');
       block.appendChild(counts);
+      body.appendChild(block);
+    });
+
+  } else if(filter && filter.indexOf('sev-')===0){
+    var sevKey = filter.replace('sev-',''); // e.g. 'S1'
+    var sevColor = {S1:'#f87171',S2:'#fbbf24',S3:'#60a5fa',S4:'#a78bfa'}[sevKey]||'#6b7280';
+    title.textContent = sevKey + ' Bugs (customfield_10040 = '+sevKey+')';
+
+    var allEpics2=[]; getActiveThemes().forEach(function(t){(t.epics||[]).forEach(function(e){allEpics2.push({epic:e,theme:t});});});
+    var matched=[];
+    allEpics2.forEach(function(item){
+      var e=item.epic;
+      var sevStories=(e.storyList||[]).filter(function(s){
+        return s.severity===sevKey && s.statusCat!=='done' && ['Cancelled','Canceled','Postponed'].indexOf(s.status)<0;
+      });
+      if(sevStories.length) matched.push({epic:e,theme:item.theme,stories:sevStories});
+    });
+
+    countEl.textContent = matched.reduce(function(a,m){return a+m.stories.length;},0)+' '+sevKey+' stories across '+matched.length+' epics';
+    if(!matched.length){body.innerHTML='<div style="color:var(--green);font-size:13px;padding:8px 0">No open '+sevKey+' stories!</div>';return;}
+
+    matched.forEach(function(item){
+      var e=item.epic, t=item.theme;
+      var block=document.createElement('div');
+      block.style.cssText='margin-bottom:14px;padding:12px 14px;background:var(--bg3);border-radius:8px;border:1px solid var(--border)';
+      var hdr=document.createElement('div');
+      hdr.style.cssText='display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap';
+      hdr.innerHTML='<a href="https://riversidejira.atlassian.net/browse/'+e.key+'" target="_blank" class="epic-key-badge">'+e.key+'</a>'
+        +'<span style="font-size:12px;font-weight:500;flex:1">'+escHtml(e.title||e.key)+'</span>'
+        +'<span style="font-size:11px;font-family:var(--font-mono);color:'+sevColor+';background:'+sevColor+'22;padding:2px 8px;border-radius:10px">'+item.stories.length+' '+sevKey+'</span>'
+        +'<span style="font-size:10px;color:var(--text3)">'+escHtml(t.name)+'</span>';
+      block.appendChild(hdr);
+      var sl=document.createElement('div');
+      sl.style.cssText='border-top:1px solid var(--border);padding-top:8px';
+      item.stories.forEach(function(s){
+        var sr=document.createElement('div');
+        sr.style.cssText='display:flex;flex-direction:column;gap:3px;padding:7px 0;border-bottom:1px solid rgba(255,255,255,0.04)';
+        var statusCol={done:'#22c55e',indeterminate:'#3b82f6',new:'rgba(255,255,255,0.3)'}[s.statusCat]||'#6b7280';
+        var createdStr=s.created?new Date(s.created).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):'';
+        sr.innerHTML='<div style="display:flex;align-items:center;gap:7px">'
+          +'<span style="width:7px;height:7px;border-radius:50%;background:'+sevColor+';flex-shrink:0;display:inline-block"></span>'
+          +'<a href="https://riversidejira.atlassian.net/browse/'+s.key+'" target="_blank" style="font-family:var(--font-mono);font-size:10px;color:var(--blue);text-decoration:none;font-weight:500;white-space:nowrap">'+s.key+'</a>'
+          +'<span style="font-size:10px;color:var(--text3);flex:1">'+escHtml(s.assignee&&s.assignee!=='Unassigned'?s.assignee:'Unassigned')+'</span>'
+          +(createdStr?'<span style="font-size:9px;color:var(--text3);font-family:var(--font-mono)">&#128197; '+createdStr+'</span>':'')
+          +'<span style="font-size:9px;font-family:var(--font-mono);padding:1px 7px;border-radius:10px;background:'+statusCol+'22;color:'+statusCol+'">'+s.status+'</span>'
+          +'</div>'
+          +'<div style="font-size:12px;color:#e2e8f0;padding-left:14px;line-height:1.4">'+escHtml(s.summary||'')+'</div>';
+        sl.appendChild(sr);
+      });
+      block.appendChild(sl);
       body.appendChild(block);
     });
 
@@ -2246,13 +2324,12 @@ function renderThemes(){
 
   // Count stories by severity across all epics
   var sevCounts={S1:0,S2:0,S3:0,S4:0};
-  var SEV_MAP={'Highest':'S1','High':'S2','Medium':'S3','Low':'S4'};
   allEpics.forEach(function(e){
     var CANC=['Cancelled','Canceled','Postponed'];
     ((e.storyList)||[]).forEach(function(s){
       if(CANC.indexOf(s.status)>=0||s.statusCat==='done') return;
-      var sv=SEV_MAP[s.priority];
-      if(sv) sevCounts[sv]++;
+      var sv=s.severity; // from customfield_10040
+      if(sv&&sevCounts.hasOwnProperty(sv)) sevCounts[sv]++;
     });
   });
   var activeSevs=getSeverityFilter();
@@ -2992,6 +3069,7 @@ async function fetchEpicData(key){
   var lbls=(aqf.storyLabels&&aqf.storyLabels.length)?aqf.storyLabels:(aqf.storyLabel?[aqf.storyLabel]:[]);
   var lblF=lbls.length?' AND labels in ('+lbls.map(function(l){return '"'+l+'"';}).join(',')+')'  :'';
   var sevFilter=getSeverityFilter();
+  // S1/S2/S3/S4 stored in customfield_10040 as exact values
   var sevF=sevFilter.length?' AND cf[10040] in ('+sevFilter.map(function(s){return '"'+s+'"';}).join(',')+')'  :'';
   var storiesJql='parent="'+key+'"'+lblF+sevF+' ORDER BY status ASC';
   var storiesResp=await jiraGet('/rest/api/3/search/jql?jql='+encodeURIComponent(storiesJql)+'&fields=summary,status,priority,assignee,customfield_10033,customfield_10040,labels,resolutiondate,updated,created,customfield_10039&maxResults=200');
@@ -3048,6 +3126,7 @@ async function fetchEpicData(key){
       updated:       s.fields.updated||null,
       created:       s.fields.created||null,
       isBlocked:    (s.fields.status&&s.fields.status.name)==='Blocked',
+      severity:     (s.fields.customfield_10040&&s.fields.customfield_10040.value)||null,
       team:         (s.fields.customfield_10039&&s.fields.customfield_10039.value)||null,
     };
   });
@@ -4175,7 +4254,7 @@ document.addEventListener('click', function(e){
   var kpi = e.target.closest('[data-filter]');
   if(kpi){ setKpiFilter(kpi.getAttribute('data-filter')); }
   var sevBadge = e.target.closest('[data-sev]');
-  if(sevBadge){ toggleSevFilter(sevBadge.getAttribute('data-sev')); }
+  if(sevBadge){ toggleSevKpiFilter(sevBadge.getAttribute('data-sev')); }
 });
 
 // ══════════════════════════════════════════════════════════════════════════
