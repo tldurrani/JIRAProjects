@@ -1104,7 +1104,19 @@ function clearFilter(){
   activeFilter = null;
   var fp = document.getElementById('filter-panel');
   if(fp) fp.style.display = 'none';
-  renderThemes();
+  // Clear label filter if active, then refresh epics
+  var key=(activeQuarterKey&&activeQuarterKey!=='__all__')?activeQuarterKey:sortedQuarterKeys().pop();
+  if(key&&state.quarters[key]&&state.quarters[key].storyLabels&&state.quarters[key].storyLabels.length){
+    state.quarters[key].storyLabels=[];
+    state.quarters[key].programLabel='';
+    labelTagState['set']=[];
+    renderLabelTags('set');
+    var plEl=document.getElementById('set-program-label'); if(plEl) plEl.value='';
+    persist();
+    autoRefreshEpics();
+  } else {
+    renderThemes();
+  }
 }
 
 
