@@ -357,6 +357,7 @@ document.addEventListener('DOMContentLoaded', initFirebase);
     <button class="tab-btn" onclick="switchTab('qsummary',this)">Q Summary</button>
     <button class="tab-btn" onclick="switchTab('releasenotes',this)">Release Notes</button>
     <button class="tab-btn" onclick="switchTab('planning',this)">Planning</button>
+    <button class="tab-btn" onclick="switchTab('bugs',this)">Bugs</button>
     <button class="tab-btn" onclick="switchTab('settings',this)">Settings</button>
   </div>
 </div>
@@ -754,7 +755,10 @@ document.addEventListener('DOMContentLoaded', initFirebase);
   </div>
   <!-- ═══════════════════════════════════════════════════════════ END RELEASE NOTES TAB -->
 
-  <div id="tab-planning" class="tab-content">
+  <div id="tab-bugs" class="tab-content">
+  <div id="bugs-root" style="padding:0"></div>
+</div>
+<div id="tab-planning" class="tab-content">
   <style>
     .pl-sub-bar{display:flex;gap:0;border-bottom:0.5px solid var(--border);margin-bottom:18px}
     .pl-sub-btn{padding:9px 16px;font-size:12px;font-family:var(--font-mono);text-transform:uppercase;letter-spacing:0.5px;color:var(--text3);border-bottom:2px solid transparent;cursor:pointer;background:none;border-top:none;border-left:none;border-right:none}
@@ -1013,6 +1017,8 @@ function switchTab(name,btn){
   if(name==='planning') plOnTabOpen();
   if(name==='settings') populateSettingsQuarterSelect();
   if(name==='settings') renderSettings();
+  if(name==='bugs'){ if(!bugsState.loaded&&!bugsState.loading) loadBugs(); else renderBugs(); }
+  if(name==='bugs'){ if(!bugsState.loaded&&!bugsState.loading) loadBugs(); else renderBugs(); }
 }
 function renderAll(){
   renderFutureQuarterBanner();
@@ -1436,9 +1442,7 @@ function renderSevPills(){
   });
   el.innerHTML=html;
   el.onclick=function(e){
-    var btn=e.target.closest('[data-sev]');
-    if(btn) toggleSevFilter(btn.getAttribute('data-sev'));
-  };
+   };
 }
 
 function toggleSevFilter(sev){
@@ -2016,26 +2020,8 @@ function setKpiFilter(f){
 }
 
 function toggleSevKpiFilter(sev){
-  var key=(activeQuarterKey&&activeQuarterKey!=='__all__')?activeQuarterKey:sortedQuarterKeys().pop();
-  var fkey='sev-'+sev;
-  var wasActive=(activeFilter===fkey);
-  // Reset state
-  if(key) state.quarters[key].severityFilter=[];
-  activeFilter=null;
-  persist();
-  var fp=document.getElementById('filter-panel');
-  if(wasActive){ if(fp) fp.style.display='none'; renderAll(); return; }
-  // Activate
-  if(key){ state.quarters[key].severityFilter=[sev]; persist(); }
-  activeFilter=fkey;
-  renderAll();
-  setTimeout(function(){
-    renderFilterPanel(fkey);
-    var fp2=document.getElementById('filter-panel');
-    if(fp2){ fp2.style.display='block'; fp2.scrollIntoView({behavior:'smooth',block:'nearest'}); }
-  },150);
+  switchTab('bugs', document.querySelector('[onclick*=\"bugs\"]'));
 }
-
 function renderFilterPanel(filter){
   var panel     = document.getElementById('filter-panel');
   var body      = document.getElementById('filter-panel-body');
@@ -2190,55 +2176,8 @@ function renderFilterPanel(filter){
       body.appendChild(block);
     });
 
-  } else if(filter&&filter.indexOf('sev-')===0){
-    var sevKey=filter.replace('sev-','');
-    var sevCol={S1:'#f87171',S2:'#fbbf24',S3:'#60a5fa',S4:'#a78bfa'}[sevKey]||'#6b7280';
-    title.textContent=sevKey+' Severity Bugs';
-    title.style.color=sevCol;
-    var CANC4=['Cancelled','Canceled','Postponed'];
-    var matched=[];
-    getActiveThemes().forEach(function(t){
-      (t.epics||[]).forEach(function(e){
-        var sevStories=(e.storyList||[]).filter(function(s){
-          return s.statusCat!=='done'&&CANC4.indexOf(s.status)<0&&s.severity===sevKey;
-        });
-        if(sevStories.length) matched.push({epic:e,theme:t,stories:sevStories});
-      });
-    });
-    countEl.textContent=matched.reduce(function(a,m){return a+m.stories.length;},0)+' '+sevKey+' bugs across '+matched.length+' epics';
-    if(!matched.length){
-      body.innerHTML='<div style="padding:12px;color:var(--text3)">No open '+sevKey+' bugs found.<br><small>Hit Refresh Epics to load severity data.</small><br><button class="btn btn-sm" style="margin-top:8px" onclick="refreshAllEpics()">&#8635; Refresh Epics</button></div>';
-      return;
-    }
-    matched.forEach(function(item){
-      var e=item.epic, t=item.theme;
-      var block=document.createElement('div');
-      block.style.cssText='margin-bottom:12px;padding:12px 14px;background:var(--bg3);border-radius:8px;border-left:3px solid '+sevCol;
-      block.innerHTML='<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">'
-        +'<a href="https://riversidejira.atlassian.net/browse/'+e.key+'" target="_blank" class="epic-key-badge">'+e.key+'</a>'
-        +'<span style="font-size:12px;font-weight:500;flex:1">'+escHtml(e.title||e.key)+'</span>'
-        +'<span style="font-size:10px;color:'+sevCol+';font-family:var(--font-mono);background:'+sevCol+'22;padding:2px 7px;border-radius:8px">'+item.stories.length+' '+sevKey+'</span>'
-        +'<span style="font-size:10px;color:var(--text3)">'+escHtml(t.name)+'</span>'
-        +'</div>';
-      var sl=document.createElement('div');
-      item.stories.forEach(function(s){
-        var statusCol={done:'#22c55e',indeterminate:'#3b82f6',new:'rgba(255,255,255,0.3)'}[s.statusCat]||'#6b7280';
-        var row=document.createElement('div');
-        row.style.cssText='display:flex;flex-direction:column;gap:2px;padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.04)';
-        row.innerHTML='<div style="display:flex;align-items:center;gap:7px">'
-          +'<span style="width:7px;height:7px;border-radius:50%;background:'+sevCol+';flex-shrink:0"></span>'
-          +'<a href="https://riversidejira.atlassian.net/browse/'+s.key+'" target="_blank" style="font-family:var(--font-mono);font-size:10px;color:var(--blue);text-decoration:none;white-space:nowrap">'+s.key+'</a>'
-          +'<span style="font-size:10px;color:var(--text3);flex:1">'+escHtml(s.assignee&&s.assignee!=='Unassigned'?s.assignee:'Unassigned')+'</span>'
-          +'<span style="font-size:9px;font-family:var(--font-mono);padding:1px 6px;border-radius:8px;background:'+statusCol+'22;color:'+statusCol+'">'+s.status+'</span>'
-          +'</div>'
-          +'<div style="font-size:12px;color:#e2e8f0;padding-left:14px">'+escHtml(s.summary||'')+'</div>';
-        sl.appendChild(row);
-      });
-      block.appendChild(sl);
-      body.appendChild(block);
-    });
 
-  } else if(filter === 'at-risk'){
+    } else if(filter === 'at-risk'){
     var riskEpics = [];
     getActiveThemes().forEach(function(t){ (t.epics||[]).forEach(function(e){ if(isRisk(e)) riskEpics.push({theme:t,epic:e}); }); });
     countEl.textContent = riskEpics.length + ' epics at risk';
@@ -2409,7 +2348,7 @@ function renderThemes(){
   if(sevTotal===0){
     fetchSevCountsFromJira();
   }
-  var activeSevs=getSeverityFilter();
+  var activeSevs=[];
 
   var kpis=[
     {l:'Themes',v:themes.length,s:'This quarter',c:'c-blue'},
@@ -2427,16 +2366,15 @@ function renderThemes(){
 
   // Build severity KPI card
   var sevColors={S1:'#f87171',S2:'#fbbf24',S3:'#60a5fa',S4:'#a78bfa'};
-  var sevCard='<div class="kpi sev-kpi-card" style="cursor:default"><div class="kpi-l">Severity bugs</div>'
-    +'<div class="sev-badges" style="display:flex;gap:5px;flex-wrap:wrap;margin-top:6px">'
+  var sevCard='<div class="kpi sev-kpi-card" onclick="switchTab(\'bugs\')" style="cursor:pointer"><div class="kpi-l">Severity bugs</div>'
+    +'<div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:6px">'
     +['S1','S2','S3','S4'].map(function(s){
       var c=sevColors[s];
-      var on=activeSevs.indexOf(s)>=0;
-      var cnt=(_sevCountsCache&&_sevCountsCache[s]>0)?_sevCountsCache[s]:sevCounts[s];
+      return '<span style="font-size:11px;padding:2px 8px;border-radius:10px;font-family:var(--font-mono);font-weight:600;border:2px solid '+c+';color:'+c+'">'+s+' '+sevCounts[s]+'</span>';
       return '<span data-sev="'+s+'" style="font-size:11px;padding:3px 9px;border-radius:12px;font-family:var(--font-mono);font-weight:600;cursor:pointer;border:2px solid '+c+';color:'+c+';background:'+(on?'rgba('+hexToRgb(c)+',0.18)':'transparent')+';transition:all .15s">'+(on?'\u2713 ':'')+s+' \xb7 '+cnt+'</span>';
     }).join('')
     +'</div>'
-  +(activeSevs.length?'<div style="font-size:10px;color:var(--text3);margin-top:5px;cursor:pointer" onclick="clearSevFilter()">Clear filter ×</div>':'<div style="font-size:10px;color:var(--text3);margin-top:5px">click to filter</div>')
+    +'<div style="font-size:10px;color:var(--text3);margin-top:5px">view all bugs &rarr;</div>'
     +'</div>';
 
   document.getElementById('kpi-row').innerHTML=kpis.map(function(k,i){
@@ -3148,8 +3086,7 @@ async function fetchEpicData(key){
   var lbls=(aqf.storyLabels&&aqf.storyLabels.length)?aqf.storyLabels:(aqf.storyLabel?[aqf.storyLabel]:[]);
   var lblF=lbls.length?' AND labels in ('+lbls.map(function(l){return '"'+l+'"';}).join(',')+')'  :'';
   var sevFilter=getSeverityFilter();
-  // S1/S2/S3/S4 stored in customfield_10040 as exact values
-  var sevF=sevFilter.length?' AND cf[10040] in ('+sevFilter.map(function(s){return '"'+s+'"';}).join(',')+')'  :'';
+  var sevF=''; // severity filtering moved to Bugs tab
   var storiesJql='parent="'+key+'"'+lblF+sevF+' ORDER BY status ASC';
   var storiesResp=await jiraGet('/rest/api/3/search/jql?jql='+encodeURIComponent(storiesJql)+'&fields=summary,status,priority,assignee,customfield_10033,customfield_10040,labels,resolutiondate,updated,created,customfield_10039&maxResults=200');
   var f=epicResp.fields;
@@ -4339,8 +4276,7 @@ async function summarizeEpic(themeId, key) {
 document.addEventListener('click', function(e){
   var kpi = e.target.closest('[data-filter]');
   if(kpi){ setKpiFilter(kpi.getAttribute('data-filter')); }
-  var sevBadge = e.target.closest('[data-sev]');
-  if(sevBadge){ toggleSevKpiFilter(sevBadge.getAttribute('data-sev')); }
+
 });
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -5217,46 +5153,137 @@ async function fetchSevCountsFromJira(){
 
 function clearSevFilter(){
   var key=(activeQuarterKey&&activeQuarterKey!=='__all__')?activeQuarterKey:sortedQuarterKeys().pop();
-  if(key){ state.quarters[key].severityFilter=[]; }
+  if(key&&state.quarters[key]) state.quarters[key].severityFilter=[];
   activeFilter=null;
   persist();
   var fp=document.getElementById('filter-panel'); if(fp) fp.style.display='none';
-  renderAll(); // re-render everything including KPI bar
+  renderAll();
+}
+function getBugsFiltered(){
+  var bugs = bugsState.bugs.slice();
+  if(bugsState.filter!=='all') bugs=bugs.filter(function(b){return b.severity===bugsState.filter;});
+  var col=bugsState.sort.col, dir=bugsState.sort.dir;
+  bugs.sort(function(a,b){
+    var av,bv;
+    if(col==='severity'){ av=SEV_ORDER[a.severity]||9; bv=SEV_ORDER[b.severity]||9; }
+    else if(col==='key'){ av=a.key; bv=b.key; }
+    else if(col==='status'){ av=a.status; bv=b.status; }
+    else if(col==='theme'){ av=a.theme; bv=b.theme; }
+    else if(col==='assignee'){ av=a.assignee; bv=b.assignee; }
+    else { av=a[col]||''; bv=b[col]||''; }
+    if(av<bv) return dir==='asc'?-1:1;
+    if(av>bv) return dir==='asc'?1:-1;
+    return 0;
+  });
+  return bugs;
 }
 
-var _sevFetchPending = false;
-async function fetchLiveSevCounts(){
-  if(_sevFetchPending) return;
-  _sevFetchPending = true;
-  try {
-    var key=(activeQuarterKey&&activeQuarterKey!=='__all__')?activeQuarterKey:sortedQuarterKeys()[sortedQuarterKeys().length-1];
-    if(!key) return;
-    // Get all epic keys for current quarter
-    var epicKeys=[];
-    (state.quarters[key].themes||[]).forEach(function(t){(t.epics||[]).forEach(function(e){epicKeys.push(e.key);});});
-    if(!epicKeys.length) return;
-
-    var counts={S1:0,S2:0,S3:0,S4:0};
-    // Query each severity level
-    for(var i=0;i<['S1','S2','S3','S4'].length;i++){
-      var sev=['S1','S2','S3','S4'][i];
-      var jql='parent in ('+epicKeys.map(function(k){return '"'+k+'"';}).join(',')+')'
-        +' AND cf[10040] = "'+sev+'"'
-        +' AND statusCategory != Done'
-        +' AND status not in (Cancelled, Canceled, Postponed)';
-      try{
-        var resp=await jiraGet('/rest/api/3/search/jql?jql='+encodeURIComponent(jql)+'&maxResults=0&fields=summary');
-        counts[sev]=resp.total||0;
-      }catch(e){}
-    }
-    window._liveSevCounts=counts;
-    _sevFetchPending=false;
-    // Re-render KPI to show real counts
-    renderThemes();
-  } catch(e){
-    _sevFetchPending=false;
-    console.warn('fetchLiveSevCounts failed:', e.message);
+function bugsSetSort(col){
+  if(bugsState.sort.col===col){
+    bugsState.sort.dir = bugsState.sort.dir==='asc'?'desc':'asc';
+  } else {
+    bugsState.sort.col=col;
+    bugsState.sort.dir=col==='severity'?'asc':'asc';
   }
+  renderBugs();
+}
+
+function renderBugsLoading(){
+  var root=document.getElementById('bugs-root'); if(!root) return;
+  root.innerHTML='<div style="padding:40px;text-align:center;color:var(--text3);font-size:13px">&#8635; Loading bugs from Jira…</div>';
+}
+
+function renderBugs(){
+  var root=document.getElementById('bugs-root'); if(!root) return;
+  if(bugsState.loading){ renderBugsLoading(); return; }
+
+  var all=bugsState.bugs;
+  var counts={S1:0,S2:0,S3:0,S4:0};
+  all.forEach(function(b){ if(counts.hasOwnProperty(b.severity)) counts[b.severity]++; });
+  var total=all.length;
+
+  var filtered=getBugsFiltered();
+
+  function sortArrow(col){
+    if(bugsState.sort.col!==col) return '<span style="opacity:0.3;font-size:10px"> &#8597;</span>';
+    return '<span style="font-size:10px"> '+(bugsState.sort.dir==='asc'?'&#8593;':'&#8595;')+'</span>';
+  }
+
+  var html='';
+  // KPI row
+  html+='<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px">';
+  [{label:'Total bugs',val:total,sub:'open · all severities',color:'var(--text)'},
+   {label:'S1 critical',val:counts.S1,sub:'immediate action',color:'#f87171'},
+   {label:'S2 high',val:counts.S2,sub:'this sprint',color:'#fbbf24'},
+   {label:'S3 + S4',val:counts.S3+counts.S4,sub:'medium · low',color:'#60a5fa'},
+  ].forEach(function(k){
+    html+='<div style="background:var(--bg2);border:0.5px solid var(--border);border-radius:8px;padding:12px 14px">'
+      +'<div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.5px;font-family:var(--font-mono)">'+escHtml(k.label)+'</div>'
+      +'<div style="font-size:22px;font-weight:500;color:'+k.color+';margin:4px 0">'+k.val+'</div>'
+      +'<div style="font-size:11px;color:var(--text3)">'+k.sub+'</div>'
+      +'</div>';
+  });
+  html+='</div>';
+
+  // Filter bar
+  html+='<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap">';
+  html+='<span style="font-size:12px;color:var(--text3)">Filter:</span>';
+  ['all','S1','S2','S3','S4'].forEach(function(f){
+    var on=bugsState.filter===f;
+    var c=f==='all'?'var(--border2)':SEV_COLOR[f];
+    var cnt=f==='all'?total:counts[f];
+    html+='<span data-filter="'+f+'" onclick="bugsFilter(this.dataset.filter)" style="padding:4px 12px;border-radius:20px;font-size:12px;font-weight:500;font-family:var(--font-mono);cursor:pointer;border:2px solid '+c+';color:'+c+';background:'+(on?'rgba(128,128,128,0.12)':'transparent')+';user-select:none">'
+      +(f==='all'?'All':f)+' · '+cnt+'</span>';
+  });
+  html+='<span style="margin-left:auto;font-size:11px;color:var(--text3)">Showing '+filtered.length+' bugs</span>';
+  if(!bugsState.loaded) html+='<button onclick="loadBugs()" style="font-size:11px;padding:3px 10px;border-radius:6px;border:0.5px solid var(--border2);background:transparent;color:var(--text2);cursor:pointer">&#8635; Refresh</button>';
+  else html+='<button onclick="loadBugs()" style="font-size:11px;padding:3px 10px;border-radius:6px;border:0.5px solid var(--border2);background:transparent;color:var(--text2);cursor:pointer">&#8635; Refresh</button>';
+  html+='</div>';
+
+  // Table
+  html+='<div style="background:var(--bg2);border:0.5px solid var(--border);border-radius:12px;overflow:hidden">';
+  // Header
+  var cols=[
+    {key:'key',label:'Key',w:'80px'},
+    {key:'summary',label:'Summary',w:'1fr'},
+    {key:'theme',label:'Epic · Theme',w:'130px'},
+    {key:'severity',label:'Severity',w:'80px'},
+    {key:'status',label:'Status',w:'100px'},
+    {key:'assignee',label:'Assignee',w:'110px'},
+  ];
+  var grid=cols.map(function(c){return c.w;}).join(' ');
+  html+='<div style="display:grid;grid-template-columns:'+grid+';gap:10px;padding:9px 14px;background:var(--bg3);border-bottom:0.5px solid var(--border)">';
+  cols.forEach(function(c){
+    html+='<span data-col="'+c.key+'" onclick="bugsSetSort(this.dataset.col)" style="font-size:10px;color:var(--text3);font-family:var(--font-mono);text-transform:uppercase;letter-spacing:0.5px;cursor:pointer;user-select:none">'+c.label+sortArrow(c.key)+'</span>';
+  });
+  html+='</div>';
+
+  if(!filtered.length){
+    html+='<div style="padding:40px;text-align:center;color:var(--text3);font-size:13px">'
+      +(bugsState.loaded?'No '+( bugsState.filter==='all'?'bugs':''+bugsState.filter+' bugs')+' found in this quarter':'Click Refresh to load bugs from Jira')
+      +'</div>';
+  } else {
+    filtered.forEach(function(b){
+      var sevC=SEV_COLOR[b.severity]||'var(--text3)';
+      var stBg={done:'rgba(34,197,94,0.1)',indeterminate:'rgba(59,130,246,0.1)',new:'rgba(100,116,139,0.1)'}[b.statusCat]||'rgba(100,116,139,0.1)';
+      var stC={done:'#22c55e',indeterminate:'var(--blue)',new:'var(--text3)'}[b.statusCat]||'var(--text3)';
+      html+='<div style="display:grid;grid-template-columns:'+grid+';gap:10px;padding:8px 14px;border-bottom:0.5px solid rgba(255,255,255,0.04);align-items:center">'
+        +'<a href="https://riversidejira.atlassian.net/browse/'+b.key+'" target="_blank" style="font-family:var(--font-mono);font-size:11px;color:var(--blue);text-decoration:none;font-weight:500;white-space:nowrap">'+escHtml(b.key)+'</a>'
+        +'<div style="font-size:12px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+escHtml(b.summary)+'">'+escHtml(b.summary)+'</div>'
+        +'<div style="font-size:11px;color:var(--text3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+escHtml(b.epicKey)+' · '+escHtml(b.theme)+'</div>'
+        +'<div><span style="font-size:10px;padding:2px 7px;border-radius:8px;font-weight:600;font-family:var(--font-mono);background:'+sevC+'22;color:'+sevC+'">'+escHtml(b.severity)+'</span></div>'
+        +'<div><span style="font-size:10px;padding:2px 7px;border-radius:6px;background:'+stBg+';color:'+stC+';white-space:nowrap">'+escHtml(b.status)+'</span></div>'
+        +'<div style="font-size:11px;color:var(--text3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+escHtml(b.assignee)+'">'+escHtml(b.assignee)+'</div>'
+        +'</div>';
+    });
+  }
+  html+='</div>';
+  root.innerHTML=html;
+}
+
+function bugsFilter(f){
+  bugsState.filter=f;
+  renderBugs();
 }
 
 
