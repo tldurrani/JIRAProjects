@@ -5379,17 +5379,89 @@ function rnRenderIssues() {
 }
 
 // ── Step 3: Generate ─────────────────────────────────────────────────────
+// Issues are split into small batches sent in parallel, each its own Netlify
+// function call. This keeps every individual call well under Netlify's
+// function execution limit — a single call covering a whole large release
+// was the cause of "Inactivity Timeout" 504s. Results are merged back into
+// one category list afterward.
+var RN_BATCH_SIZE = 15;
+var RN_CATEGORY_ORDER = [
+  'Infrastructure & Configuration Enhancements',
+  'Performance & Stability Improvements',
+  'Security Improvements',
+  'Proctoring Improvements',
+  'Student Data Improvements',
+  'Rostering & File Processing Fixes',
+  'Observability & Diagnostics',
+  'Modernization & Workflow Enhancements',
+  'Learnosity & Testing Engine Enhancements',
+  'Admin & UI Improvements',
+];
+
+function rnChunk(arr, size) {
+  var out = [];
+  for (var i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+}
+
+function rnMergeCategories(batchResults) {
+  var merged = [], indexByName = {};
+  batchResults.forEach(function(result) {
+    (result.categories || []).forEach(function(cat) {
+      var key = (cat.name || '').trim().toLowerCase();
+      if (!(key in indexByName)) {
+        indexByName[key] = merged.length;
+        merged.push({ name: cat.name, items: (cat.items || []).slice() });
+      } else {
+        merged[indexByName[key]].items = merged[indexByName[key]].items.concat(cat.items || []);
+      }
+    });
+  });
+  merged.sort(function(a, b) {
+    var ia = RN_CATEGORY_ORDER.indexOf(a.name); if (ia < 0) ia = RN_CATEGORY_ORDER.length;
+    var ib = RN_CATEGORY_ORDER.indexOf(b.name); if (ib < 0) ib = RN_CATEGORY_ORDER.length;
+    return ia - ib;
+  });
+  return merged;
+}
+
+async function rnGenerateBatch(v, batchIssues) {
+  var res = await fetch('/api/releasenotes', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ action:'generate', versionName: v.name, releaseDate: v.releaseDate, issues: batchIssues }),
+  });
+  if (!res.ok) {
+    var errText = await res.text();
+    throw new Error('Server error ' + res.status + ': ' + errText.slice(0,300));
+  }
+  var data = await res.json();
+  if (data.error) throw new Error(data.error);
+  if (!data.categories) throw new Error('AI returned no categories for a batch. Response: ' + JSON.stringify(data).slice(0,300));
+  return data;
+}
+
 async function rnGenerate() {
   var issues = rnGetIncludedIssues();
   if (!issues.length) { setStatus('No issues to generate notes for', 'error'); return; }
   rnSetStep(3);
-  var msgs = [
-    'Analyzing ' + issues.length + ' issues...',
-    'Categorizing changes...',
-    'Writing customer-facing descriptions...',
-    'Grouping related improvements...',
-    'Finalizing release notes...',
-  ];
+  var batches = rnChunk(issues, RN_BATCH_SIZE);
+  var msgs = batches.length > 1
+    ? [
+        'Analyzing ' + issues.length + ' issues across ' + batches.length + ' batches...',
+        'Categorizing changes...',
+        'Writing customer-facing descriptions...',
+        'Grouping related improvements...',
+        'Merging batches together...',
+        'Finalizing release notes...',
+      ]
+    : [
+        'Analyzing ' + issues.length + ' issues...',
+        'Categorizing changes...',
+        'Writing customer-facing descriptions...',
+        'Grouping related improvements...',
+        'Finalizing release notes...',
+      ];
   var mi = 0;
   var timer = setInterval(function() {
     mi = (mi + 1) % msgs.length;
@@ -5398,22 +5470,15 @@ async function rnGenerate() {
   }, 1600);
   try {
     var v = rnState.selectedVersion;
-    var res = await fetch('/api/releasenotes', {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ action:'generate', versionName: v.name, releaseDate: v.releaseDate, issues: issues }),
-    });
+    var results = await Promise.all(batches.map(function(batchIssues) {
+      return rnGenerateBatch(v, batchIssues);
+    }));
     clearInterval(timer);
-    if (!res.ok) {
-      var errText = await res.text();
-      throw new Error('Server error ' + res.status + ': ' + errText.slice(0,300));
+    var merged = rnMergeCategories(results);
+    if (!merged.length) {
+      throw new Error('AI returned no categories.');
     }
-    var data = await res.json();
-    if (data.error) throw new Error(data.error);
-    if (!data.categories || !data.categories.length) {
-      throw new Error('AI returned no categories. Response: ' + JSON.stringify(data).slice(0,300));
-    }
-    rnState.categories = data.categories;
+    rnState.categories = merged;
     rnSetStep(4);
     rnRenderEditPanel();
     rnBuildPreviewHtml();
