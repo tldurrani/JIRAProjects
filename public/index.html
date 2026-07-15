@@ -558,6 +558,9 @@ document.addEventListener('DOMContentLoaded', initFirebase);
     .rn-itype-spike{background:rgba(245,158,11,.12);color:#fbbf24;border:0.5px solid rgba(245,158,11,.3)}
     .rn-itype-subtask{background:rgba(100,116,139,.12);color:#94a3b8;border:0.5px solid rgba(100,116,139,.3)}
     .rn-isum{color:var(--text2);flex:1;line-height:1.4}
+    .rn-isum-wrap{flex:1;min-width:0;display:flex;flex-direction:column;gap:4px}
+    .rn-labels-row{display:flex;gap:4px;flex-wrap:wrap}
+    .rn-label{font-size:9px;padding:1px 7px;border-radius:10px;background:rgba(59,130,246,.12);border:0.5px solid rgba(59,130,246,.3);color:#60a5fa;font-family:var(--font-mono);white-space:nowrap}
     .rn-istat{font-size:10px;color:var(--text3);white-space:nowrap;flex-shrink:0;font-family:var(--font-mono)}
     .rn-filter-bar{padding:9px 20px;border-bottom:0.5px solid var(--border);display:flex;gap:14px;align-items:center;background:var(--bg3);flex-wrap:wrap}
     .rn-filter-chk{display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text2);cursor:pointer;user-select:none}
@@ -5364,9 +5367,12 @@ function rnRenderIssues() {
     var row = document.createElement('div');
     row.className = 'rn-issue-row' + (isExcluded ? ' rn-excluded' : '');
     var typeClass = TYPE_STYLE[i.type] || 'rn-itype-task';
+    var labelsHtml = (i.labels && i.labels.length)
+      ? '<div class="rn-labels-row">' + i.labels.map(function(l){ return '<span class="rn-label">'+escHtml(l)+'</span>'; }).join('') + '</div>'
+      : '';
     row.innerHTML = '<span class="rn-ikey"><a href="https://riversidejira.atlassian.net/browse/' + i.key + '" target="_blank" style="color:var(--blue);text-decoration:none">' + escHtml(i.key) + '</a></span>'
       + '<span class="rn-itype ' + typeClass + '">' + escHtml(i.type) + '</span>'
-      + '<span class="rn-isum">' + escHtml(i.summary) + '</span>'
+      + '<div class="rn-isum-wrap"><span class="rn-isum">' + escHtml(i.summary) + '</span>' + labelsHtml + '</div>'
       + '<span class="rn-istat">' + (isExcluded ? 'excluded' : escHtml(i.status || '')) + '</span>';
     list.appendChild(row);
   });
