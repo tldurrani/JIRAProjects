@@ -1,0 +1,12 @@
+{
+  "name": "riverside-q2-tracker",
+  "private": true,
+  "scripts": {
+    "test": "playwright test",
+    "test:update-baselines": "playwright test --update-snapshots",
+    "test:report": "playwright show-report tests/report"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.47.0"
+  }
+}
