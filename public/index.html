@@ -3113,7 +3113,7 @@ async function refreshEpic(themeId,key){
   } catch(e){ setStatus('Error: '+e.message,'error'); }
 }
 async function refreshAllEpics(){
-  _sevCountsCache = null; // reset sev cache on refresh
+  window._liveSevCounts=null; _sevFetchPending=false; // reset sev cache
   var aq=getActiveQuarter();
   if(aq.end&&new Date(aq.end+'T23:59:59')<new Date()){
     if(!confirm(aq.label+' has ended. Refreshing will update epics to current Jira state. Continue?')) return;
@@ -4648,7 +4648,7 @@ function populateSettingsQuarterSelect(){
 
 function switchToQuarterFromSettings(key){
   if(!key||!state.quarters[key]) return;
-  activeQuarterKey=key; renderAll(); renderQuarterSwitcher();
+  _sevCountsCache=null; activeQuarterKey=key; renderAll(); renderQuarterSwitcher();
   var aq=getActiveQuarter();
   var e1=document.getElementById('set-quarter'); if(e1) e1.value=aq.label||'';
   var e2=document.getElementById('set-qstart'); if(e2) e2.value=aq.start||'';
@@ -5223,6 +5223,42 @@ function clearSevFilter(){
   var fp=document.getElementById('filter-panel'); if(fp) fp.style.display='none';
   renderAll(); // re-render everything including KPI bar
 }
+
+var _sevFetchPending = false;
+async function fetchLiveSevCounts(){
+  if(_sevFetchPending) return;
+  _sevFetchPending = true;
+  try {
+    var key=(activeQuarterKey&&activeQuarterKey!=='__all__')?activeQuarterKey:sortedQuarterKeys()[sortedQuarterKeys().length-1];
+    if(!key) return;
+    // Get all epic keys for current quarter
+    var epicKeys=[];
+    (state.quarters[key].themes||[]).forEach(function(t){(t.epics||[]).forEach(function(e){epicKeys.push(e.key);});});
+    if(!epicKeys.length) return;
+
+    var counts={S1:0,S2:0,S3:0,S4:0};
+    // Query each severity level
+    for(var i=0;i<['S1','S2','S3','S4'].length;i++){
+      var sev=['S1','S2','S3','S4'][i];
+      var jql='parent in ('+epicKeys.map(function(k){return '"'+k+'"';}).join(',')+')'
+        +' AND cf[10040] = "'+sev+'"'
+        +' AND statusCategory != Done'
+        +' AND status not in (Cancelled, Canceled, Postponed)';
+      try{
+        var resp=await jiraGet('/rest/api/3/search/jql?jql='+encodeURIComponent(jql)+'&maxResults=0&fields=summary');
+        counts[sev]=resp.total||0;
+      }catch(e){}
+    }
+    window._liveSevCounts=counts;
+    _sevFetchPending=false;
+    // Re-render KPI to show real counts
+    renderThemes();
+  } catch(e){
+    _sevFetchPending=false;
+    console.warn('fetchLiveSevCounts failed:', e.message);
+  }
+}
+
 
 function bootApp(){
   // localStorage loaded in new multi-quarter block above
