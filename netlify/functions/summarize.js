@@ -11,16 +11,18 @@ exports.handler = async (event) => {
   let body;
   try { body = JSON.parse(event.body); } catch(e) { return { statusCode: 400, body: JSON.stringify({ error: 'Invalid JSON' }) }; }
 
-  const { title, description } = body;
+  const { title, description, mode } = body;
   if (!title || !description) return { statusCode: 400, body: JSON.stringify({ error: 'Missing title or description' }) };
 
+  const isJsonMode = mode === 'json';
   const isQSummary = description.length > 1000;
-  const maxTokens = isQSummary ? 4000 : 600;
+  const maxTokens = isJsonMode ? 1200 : (isQSummary ? 4000 : 600);
 
-  const systemPrompt = isQSummary
+  const systemPrompt = isJsonMode
+    ? `Return ONLY valid JSON exactly as requested in the user message below. No markdown code fences, no commentary, no explanation before or after — the entire response body must be parseable JSON and nothing else.`
+    : isQSummary
     ? `You are a senior engineering PM writing quarterly reports.
-You MUST write all 5 sections. Never truncate or cut off mid-sentence.
-Cover EVERY theme provided — do not skip any.
+You MUST write all sections requested. Never truncate or cut off mid-sentence.
 Use this formatting:
 - Bold section titles using **TITLE**
 - Use bullet points (- item) for lists of stories, risks, or action items

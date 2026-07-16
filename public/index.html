@@ -140,7 +140,8 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-sans);font-si
 .theme-body{display:none;padding:0 20px 20px}.theme-card.open .theme-body{display:block}
 .epic-rows{display:flex;flex-direction:column;gap:8px;margin-bottom:14px}
 .epic-row{background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:16px 18px}
-.epic-row.at-risk{border-color:rgba(239,68,68,0.25)}
+.epic-row.at-risk{border-color:rgba(245,158,11,0.35)}
+.epic-row.critical-risk{border-color:rgba(239,68,68,0.5)}
 .epic-row-top{display:flex;align-items:flex-start;gap:10px;margin-bottom:10px}
 .epic-key-badge{font-family:var(--font-mono);font-size:11px;color:var(--blue);background:rgba(59,130,246,0.12);border:1px solid rgba(59,130,246,0.25);border-radius:5px;padding:3px 8px;white-space:nowrap;flex-shrink:0;text-decoration:none}
 .epic-key-badge:hover{background:rgba(59,130,246,0.25)}
@@ -990,7 +991,93 @@ function isDoneByCategory(statusObj){
   if(statusObj.statusCategory && statusObj.statusCategory.key === 'done') return true;
   return isDone(statusObj.name||'');
 }
-function isRisk(e){ return ['Highest','High'].indexOf(e.priority)>=0 && !isDone(e.status); }
+
+// ── Risk forecasting ─────────────────────────────────────────────────────
+// Replaces the old "priority = risk" heuristic. Risk is now a forecast:
+// given how much work is done so far and how much time is left in the
+// quarter, will this epic actually finish on time at its current pace?
+// A story genuinely sitting in Jira's "Blocked" status overrides the pace
+// math entirely, since a real blocker matters regardless of how the
+// numbers look on paper.
+//
+// Returns { level: null | 'atrisk' | 'critical', reason, ... } — never a
+// bare boolean, so callers that need detail (badges, AI prompts, the
+// quarterly narrative) can explain *why*, not just flag that something's off.
+function computeEpicRisk(e) {
+  if (isDone(e.status)) return { level: null };
+  var s = e.stories || { done:0, inprog:0, todo:0, total:0, ptsDone:0, ptsTotal:0, blockedStatus:0 };
+  if (!s.total) return { level: null }; // nothing to forecast from yet
+
+  var key = (typeof activeQuarterKey !== 'undefined' && activeQuarterKey && activeQuarterKey !== '__all__') ? activeQuarterKey : sortedQuarterKeys().pop();
+  var q = key && state.quarters[key];
+  if (!q || !q.start || !q.end) return { level: null };
+
+  var start = new Date(q.start + 'T00:00:00');
+  var end   = new Date(q.end + 'T23:59:59');
+  var now   = new Date();
+  var msPerWeek = 604800000;
+  var totalWeeks     = Math.max(0.1, (end - start) / msPerWeek);
+  var elapsedWeeks   = Math.min(totalWeeks, Math.max(0, (now - start) / msPerWeek));
+  var remainingWeeks = Math.max(0, (end - now) / msPerWeek);
+
+  var usePoints = !!s.hasPoints && s.ptsTotal > 0;
+  var doneAmt  = usePoints ? (s.ptsDone || 0)  : (s.done || 0);
+  var totalAmt = usePoints ? (s.ptsTotal || 0) : (s.total || 0);
+  var remaining = Math.max(0, totalAmt - doneAmt);
+  var unit = usePoints ? 'pts' : (totalAmt === 1 ? 'story' : 'stories');
+
+  if (remaining <= 0) return { level: null }; // effectively finished
+
+  var blockedCount = s.blockedStatus || 0;
+
+  // A real Jira "Blocked" status wins regardless of what the pace math says.
+  if (blockedCount > 0) {
+    return {
+      level: (blockedCount >= 2 || remainingWeeks <= 0) ? 'critical' : 'atrisk',
+      reason: blockedCount + ' stor' + (blockedCount === 1 ? 'y' : 'ies') + ' blocked in Jira',
+      blockedCount: blockedCount,
+    };
+  }
+
+  // Quarter's already over and work remains — critical no matter what.
+  if (remainingWeeks <= 0) {
+    return { level: 'critical', reason: 'Quarter ended with ' + remaining + ' ' + unit + ' remaining' };
+  }
+
+  // Too early in the quarter for a pace reading to mean anything yet.
+  if (elapsedWeeks < 1) return { level: null };
+
+  var velocity = doneAmt / elapsedWeeks; // amount completed per week, so far
+  if (velocity <= 0) {
+    if (elapsedWeeks / totalWeeks > 0.3) {
+      return { level: 'critical', reason: 'No completed work yet this quarter' };
+    }
+    return { level: null };
+  }
+
+  var projectedWeeksNeeded = remaining / velocity;
+  var ratio = projectedWeeksNeeded / remainingWeeks;
+
+  if (ratio > 1.5) {
+    return {
+      level: 'critical',
+      reason: 'At current pace needs ~' + projectedWeeksNeeded.toFixed(1) + 'wk but only ' + remainingWeeks.toFixed(1) + 'wk remain',
+      ratio: ratio, projectedWeeksNeeded: projectedWeeksNeeded, remainingWeeks: remainingWeeks,
+    };
+  }
+  if (ratio > 1.0) {
+    return {
+      level: 'atrisk',
+      reason: 'At current pace needs ~' + projectedWeeksNeeded.toFixed(1) + 'wk vs ' + remainingWeeks.toFixed(1) + 'wk remaining',
+      ratio: ratio, projectedWeeksNeeded: projectedWeeksNeeded, remainingWeeks: remainingWeeks,
+    };
+  }
+  return { level: null, ratio: ratio };
+}
+
+function isRisk(e) { return computeEpicRisk(e).level !== null; }
+function isCriticalRisk(e) { return computeEpicRisk(e).level === 'critical'; }
+
 function escHtml(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function weeksLeft(){ return Math.max(0,Math.ceil((new Date(getActiveQuarter().end)-new Date())/(7*864e5))); }
 
@@ -1632,20 +1719,29 @@ async function generateEpicRisks(epicKey){
   if(key){(state.quarters[key].themes||[]).forEach(function(t){(t.epics||[]).forEach(function(e){if(e.key===epicKey)epic=e;});});}
   if(!epic){if(genBtn){genBtn.textContent='&#10022; AI Generate';genBtn.disabled=false;}return;}
 
-  var s=epic.stories||{done:0,inprog:0,todo:0,blocked:0,total:0};
+  var s=epic.stories||{done:0,inprog:0,todo:0,total:0,blockedStatus:0};
   var pct=s.total>0?Math.round((s.done||0)/s.total*100):0;
   var qEnd=(key&&state.quarters[key]&&state.quarters[key].end)||'unknown';
-  var promptText='You are a program manager analyzing a Jira epic for BTS readiness risks. Epic: '+epicKey+' - '+(epic.title||epic.key)+'. Status: '+epic.status+'. Stories: '+(s.done||0)+' done / '+(s.total||0)+' total ('+pct+'% complete). At-risk: '+(s.blocked||0)+'. Quarter end: '+qEnd+'. Identify 2-4 specific risks. Return ONLY a JSON array with no markdown: [{"title":"...","severity":"high|medium|low","mitigation":"...","owner":"","status":"open","source":"ai"}]';
+  var forecast=computeEpicRisk(epic);
+  var forecastLine = forecast.level
+    ? 'Forecast: '+forecast.level.toUpperCase()+' \u2014 '+(forecast.reason||'behind pace')
+    : 'Forecast: on pace to finish by quarter end';
+  var promptText='You are a program manager analyzing a Jira epic for BTS readiness risks. Epic: '+epicKey+' - '+(epic.title||epic.key)+'. Status: '+epic.status+'. Stories: '+(s.done||0)+' done / '+(s.total||0)+' total ('+pct+'% complete). Blocked in Jira: '+(s.blockedStatus||0)+'. '+forecastLine+'. Quarter end: '+qEnd+'. Identify 2-4 specific risks grounded in this data. Return ONLY a JSON array with no markdown: [{"title":"...","severity":"high|medium|low","mitigation":"...","owner":"","status":"open","source":"ai"}]';
 
   try {
-    var resp=await fetch('https://api.anthropic.com/v1/messages',{
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:1000,messages:[{role:'user',content:promptText}]})
+    var resp = await fetch('/api/summarize', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ title: 'Epic Risk Analysis \u2014 '+epicKey, description: promptText, mode: 'json' }),
     });
-    var data=await resp.json();
-    var text=(data.content||[]).map(function(c){return c.text||'';}).join('');
-    var clean=text.replace(/```json|```/g,'').trim();
+    if (!resp.ok) {
+      var errText = await resp.text();
+      throw new Error('Server error ' + resp.status + ': ' + errText.slice(0,200));
+    }
+    var data = await resp.json();
+    if (data.error) throw new Error(data.error);
+    if (!data.summary) throw new Error('No response returned.');
+    var clean=data.summary.replace(/```json|```/g,'').trim();
     var risks=JSON.parse(clean);
     if(Array.isArray(risks)){
       risks=risks.map(function(r,i){return Object.assign({id:'ai'+Date.now()+i},r);});
@@ -1653,8 +1749,10 @@ async function generateEpicRisks(epicKey){
       renderRiskPanel(epicKey);
       updateRiskBadge(epicKey);
       setStatus('Risks generated for '+epicKey,'ok');
+    } else {
+      throw new Error('AI response was not a JSON array.');
     }
-  } catch(e){ setStatus('Risk generation failed','error'); console.error(e); }
+  } catch(e){ setStatus('Risk generation failed: '+e.message,'error'); console.error(e); }
   if(genBtn){genBtn.textContent='&#10022; AI Generate';genBtn.disabled=false;}
 }
 
@@ -2085,7 +2183,7 @@ function renderFilterPanel(filter){
         + '<span style="display:inline-flex;align-items:center;gap:4px"><span style="width:8px;height:8px;border-radius:2px;background:#ef4444;display:inline-block"></span><b style="font-family:var(--font-mono)">'+out+'</b>&nbsp;outstanding</span>'
         + '<span style="display:inline-flex;align-items:center;gap:4px"><span style="width:8px;height:8px;border-radius:2px;background:#3b82f6;display:inline-block"></span><b style="font-family:var(--font-mono)">'+s.inprog+'</b>&nbsp;in prog / review / test</span>'
         + '<span style="display:inline-flex;align-items:center;gap:4px"><span style="width:8px;height:8px;border-radius:2px;background:#22c55e;display:inline-block"></span><b style="font-family:var(--font-mono)">'+s.done+'</b>&nbsp;done</span>'
-        + (s.blocked>0?'<span style="display:inline-flex;align-items:center;gap:4px;color:#f87171"><span style="width:8px;height:8px;border-radius:2px;background:#ef4444;display:inline-block"></span><b style="font-family:var(--font-mono)">'+s.blocked+'</b>&nbsp;high-priority open</span>':'');
+        + (function(){ var ri=computeEpicRisk(e); if(!ri.level) return ''; var crit=ri.level==='critical'; return '<span style="display:inline-flex;align-items:center;gap:4px;color:'+(crit?'#f87171':'#fbbf24')+'" title="'+escHtml(ri.reason||'')+'"><span style="width:8px;height:8px;border-radius:2px;background:'+(crit?'#ef4444':'#f59e0b')+';display:inline-block"></span><b style="font-family:var(--font-mono)">'+(crit?'CRITICAL':'AT RISK')+'</b></span>'; })();
       block.appendChild(counts);
       body.appendChild(block);
     });
@@ -2306,7 +2404,7 @@ function renderThemes(){
     {l:'Stories',v:totalStories,s:'Across all epics',c:'c-indigo'},
     {l:'Outstanding',v:outstanding,s:'Not yet done',c:'c-amber'},
     {l:'Done',v:doneStories,s:totalStories?Math.round(doneStories/totalStories*100)+'% complete':'--',c:'c-green'},
-    {l:'At Risk',v:risks,s:'High+ priority open',c:'c-red'},
+    {l:'At Risk',v:risks,s:'Behind pace or blocked',c:'c-red'},
   ];
   var kpiFilters = ['','','','outstanding','done','at-risk'];
   var kpiRowEl2=document.getElementById('kpi-row');
@@ -2529,7 +2627,7 @@ function buildEpicRow(themeId,e){
   var pctColor=pct>=75?'#22c55e':pct>=40?'#f59e0b':'#ef4444';
 
   var row=document.createElement('div');
-  row.className='epic-row'+(isRisk(e)?' at-risk':'');
+  row.className='epic-row'+(isCriticalRisk(e)?' critical-risk':isRisk(e)?' at-risk':'');
   row.id='erow-'+themeId+'-'+e.key;
 
   // Top row
@@ -2618,10 +2716,13 @@ function buildEpicRow(themeId,e){
   assignSpan.textContent=e.assignee||'Unassigned';
   chips.appendChild(assignSpan);
 
-  if(isRisk(e)){
+  var riskInfo = computeEpicRisk(e);
+  if(riskInfo.level){
+    var isCrit = riskInfo.level === 'critical';
     var riskSpan=document.createElement('span');
-    riskSpan.style.cssText='font-size:10px;background:rgba(239,68,68,.12);color:#f87171;border:1px solid rgba(239,68,68,.25);border-radius:20px;padding:1px 8px';
-    riskSpan.textContent='AT RISK';
+    riskSpan.style.cssText='font-size:10px;background:'+(isCrit?'rgba(239,68,68,.12)':'rgba(245,158,11,.12)')+';color:'+(isCrit?'#f87171':'#fbbf24')+';border:1px solid '+(isCrit?'rgba(239,68,68,.25)':'rgba(245,158,11,.25)')+';border-radius:20px;padding:1px 8px';
+    riskSpan.textContent=isCrit?'CRITICAL':'AT RISK';
+    riskSpan.title=riskInfo.reason||'';
     chips.appendChild(riskSpan);
   }
   row.appendChild(chips);
@@ -2646,7 +2747,6 @@ function buildEpicRow(themeId,e){
       +(s.review?'<span class="scount"><span class="scount-dot" style="background:#a855f7"></span><span class="scount-val">'+s.review+'</span><span class="scount-label">review</span></span>':'')
       +(s.testing?'<span class="scount"><span class="scount-dot" style="background:#f59e0b"></span><span class="scount-val">'+s.testing+'</span><span class="scount-label">testing</span></span>':'')
       +'<span class="scount"><span class="scount-dot" style="background:#475569"></span><span class="scount-val">'+s.todo+'</span><span class="scount-label">to do</span></span>'
-      +(s.blocked>0?'<span class="scount"><span class="scount-dot" style="background:#ef4444"></span><span class="scount-val">'+s.blocked+'</span><span class="scount-label">at risk</span></span>':'')
       +(s.blockedStatus>0?'<span class="scount"><span class="scount-dot" style="background:#f97316"></span><span class="scount-val">'+s.blockedStatus+'</span><span class="scount-label">blocked</span></span>':'')
       +(e.fetchedAt?'<span style="font-size:9px;color:var(--text3);margin-left:auto">fetched '+new Date(e.fetchedAt).toLocaleTimeString()+'</span>':'')
       +'</div>'
@@ -2745,7 +2845,7 @@ function buildEpicRow(themeId,e){
     var catColor = {done:'#22c55e', indeterminate:'#3b82f6', new:'rgba(255,255,255,0.2)'};
 
     var STATUS_GROUPS = [
-      { label: 'At Risk',             color: '#ef4444', filter: function(s){ return s.statusCat!=='done' && ['Highest','High'].indexOf(s.priority)>=0; } },
+      { label: 'High Priority',       color: '#ef4444', filter: function(s){ return s.statusCat!=='done' && ['Highest','High'].indexOf(s.priority)>=0; } },
       { label: 'Blocked',              color: '#f97316', filter: function(s){ return s.status==='Blocked' && s.statusCat!=='done'; } },
       { label: 'In Progress',         color: '#3b82f6', filter: function(s){ return s.statusCat==='indeterminate' && ['Highest','High'].indexOf(s.priority)<0 && s.status!=='Blocked' && ['Review','In Review','Testing','In Testing','QA','READY FOR PRODUCTION'].indexOf(s.status)<0; } },
       { label: 'Review',              color: '#a855f7', filter: function(s){ return s.statusCat==='indeterminate' && ['Highest','High'].indexOf(s.priority)<0 && ['Review','In Review'].indexOf(s.status)>=0; } },
@@ -2758,7 +2858,7 @@ function buildEpicRow(themeId,e){
       var sr = document.createElement('div');
       sr.style.cssText = 'display:flex;flex-direction:column;gap:3px;padding:7px 0 7px 10px;border-bottom:1px solid rgba(255,255,255,0.04)';
       var isDone = s.statusCat === 'done';
-      var isAtRisk = ['Highest','High'].indexOf(s.priority)>=0 && !isDone;
+      var isHighPriority = ['Highest','High'].indexOf(s.priority)>=0 && !isDone;
       var createdStr = s.created ? new Date(s.created).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) : '';
       var resolvedStr = s.resolutionDate ? new Date(s.resolutionDate).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) : '';
       var statusColor = s.statusCat==='done'?'#22c55e':s.statusCat==='indeterminate'?'#3b82f6':'rgba(255,255,255,0.4)';
@@ -2771,7 +2871,7 @@ function buildEpicRow(themeId,e){
         +(createdStr?'<span style="font-size:9px;color:var(--text3);font-family:var(--font-mono);white-space:nowrap">&#128197; '+createdStr+'</span>':'')
         +(isDone&&resolvedStr?'<span style="font-size:9px;color:#22c55e;font-family:var(--font-mono);white-space:nowrap">&#10003; '+resolvedStr+'</span>':'')
         +'<span style="font-size:9px;font-family:var(--font-mono);padding:1px 7px;border-radius:10px;white-space:nowrap;background:'+statusColor+'22;color:'+statusColor+'">'+escHtml(s.status)+'</span>'
-        +(isAtRisk?'<span style="font-size:9px;font-family:var(--font-mono);padding:1px 6px;border-radius:10px;background:rgba(239,68,68,0.15);color:#f87171;white-space:nowrap">'+escHtml(s.priority)+'</span>':'');
+        +(isHighPriority?'<span style="font-size:9px;font-family:var(--font-mono);padding:1px 6px;border-radius:10px;background:rgba(239,68,68,0.15);color:#f87171;white-space:nowrap">'+escHtml(s.priority)+'</span>':'');
 
       var sumEl = document.createElement('div');
       sumEl.style.cssText = 'font-size:13px;color:'+(isDone?'var(--text3)':'#e2e8f0')+';line-height:1.4;'+(isDone?'text-decoration:line-through;opacity:0.55;':'');
@@ -3376,7 +3476,7 @@ function renderAllQuartersKPIs(){
     {label:'EPICS',      value:allEpics.length,    sub:'Deduplicated total', color:'#6366f1'},
     {label:'OVERALL',    value:pct+'%',            sub:'Stories complete',   color:pctColor },
     {label:'OUTSTANDING',value:totalS-doneS,       sub:'Stories remaining',  color:'#f59e0b'},
-    {label:'AT RISK',    value:openRisks||allEpics.filter(isRisk).length, sub:'High+ priority open', color:'#ef4444'},
+    {label:'AT RISK',    value:openRisks||allEpics.filter(isRisk).length, sub:'Behind pace or blocked', color:'#ef4444'},
   ];
 
   kpiRowAll.innerHTML=stats.map(function(s){
@@ -3526,7 +3626,7 @@ function qsThemeBlock(t) {
     var s=e.stories||{done:0,inprog:0,todo:0,total:0,ptsDone:0,ptsTotal:0};
     var ep=s.total>0?Math.round(s.done/s.total*100):0;
     lines.push('  EPIC '+e.key+' ['+e.status+'] '+ep+'%: '+e.title);
-    lines.push('    '+s.done+' done, '+s.inprog+' in-progress/review/testing, '+(s.total-s.done-s.inprog)+' to do'+(s.ptsTotal>0?' | '+s.ptsDone+'/'+s.ptsTotal+' pts':'')+(isRisk(e)?' | AT RISK':''));
+    lines.push('    '+s.done+' done, '+s.inprog+' in-progress/review/testing, '+(s.total-s.done-s.inprog)+' to do'+(s.ptsTotal>0?' | '+s.ptsDone+'/'+s.ptsTotal+' pts':'')+(function(){ var ri=computeEpicRisk(e); return ri.level ? ' | '+ri.level.toUpperCase()+(ri.reason?' ('+ri.reason+')':'') : ''; })());
     if(e.storyList&&e.storyList.length){
       var inp=e.storyList.filter(function(s){return s.statusCat==='indeterminate';});
       var out=e.storyList.filter(function(s){return s.statusCat==='new';});
