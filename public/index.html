@@ -561,6 +561,9 @@ document.addEventListener('DOMContentLoaded', initFirebase);
     .rn-isum-wrap{flex:1;min-width:0;display:flex;flex-direction:column;gap:4px}
     .rn-labels-row{display:flex;gap:4px;flex-wrap:wrap}
     .rn-label{font-size:9px;padding:1px 7px;border-radius:10px;background:rgba(59,130,246,.12);border:0.5px solid rgba(59,130,246,.3);color:#60a5fa;font-family:var(--font-mono);white-space:nowrap}
+    .rn-flag{font-size:9px;padding:1px 7px;border-radius:10px;background:rgba(245,158,11,.14);color:#fbbf24;border:0.5px solid rgba(245,158,11,.35);font-family:var(--font-mono);font-weight:600;white-space:nowrap}
+    .rn-row-toggle{background:none;border:0.5px solid var(--border);color:var(--text3);border-radius:6px;width:20px;height:20px;flex-shrink:0;cursor:pointer;font-size:11px;line-height:1;display:flex;align-items:center;justify-content:center}
+    .rn-row-toggle:hover{border-color:var(--red);color:#f87171}
     .rn-istat{font-size:10px;color:var(--text3);white-space:nowrap;flex-shrink:0;font-family:var(--font-mono)}
     .rn-filter-bar{padding:9px 20px;border-bottom:0.5px solid var(--border);display:flex;gap:14px;align-items:center;background:var(--bg3);flex-wrap:wrap}
     .rn-filter-chk{display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text2);cursor:pointer;user-select:none}
@@ -683,6 +686,9 @@ document.addEventListener('DOMContentLoaded', initFirebase);
         <label class="rn-filter-chk"><input type="checkbox" id="rn-excl-task" checked style="accent-color:var(--blue)"> Tasks</label>
         <label class="rn-filter-chk"><input type="checkbox" id="rn-excl-subtask" checked style="accent-color:var(--blue)"> Sub-tasks</label>
         <label class="rn-filter-chk"><input type="checkbox" id="rn-excl-spike" checked style="accent-color:var(--blue)"> Spikes</label>
+        <label class="rn-filter-chk"><input type="checkbox" id="rn-excl-nonprod-bugs" checked style="accent-color:var(--blue)"> Non-PROD Bugs</label>
+        <button class="btn btn-ghost btn-sm" style="font-size:10px;padding:2px 8px" onclick="rnBulkRemoveFlagged()">&#128681; Remove flagged Tasks/Stories</button>
+        <button class="btn btn-ghost btn-sm" style="font-size:10px;padding:2px 8px" onclick="rnRestoreAll()">&#8634; Restore removed</button>
         <span id="rn-issue-count" style="margin-left:auto;font-family:var(--font-mono);font-size:10px;color:var(--text3)"></span>
       </div>
       <div id="rn-issues-list" style="max-height:400px;overflow-y:auto"></div>
@@ -5204,7 +5210,24 @@ var rnState = {
   selectedVersion: null,   // { id, name, released, releaseDate, description }
   allIssues: [],
   categories: [],           // [{ name, items:[{ key, text }] }]
+  manuallyExcluded: {},     // { [issueKey]: true } - user-removed items, one at a time or in bulk
 };
+
+// ── Lower-environment detection ─────────────────────────────────────────────
+// Simple name-based check: anything in the summary (or labels) that mentions
+// an environment below PROD. This is intentionally just a keyword match on
+// the ticket name for now, not a dedicated Jira field.
+// Note: 'test'/'testing' deliberately excluded — DataManager is a testing/
+// assessment platform, so those words show up constantly in legitimate PROD
+// ticket summaries (e.g. "test session", "Testing Engine") and would cause
+// a flood of false positives. Add them back below if you find you need them.
+var RN_LOWER_ENV_KEYWORDS = ['dev','development','staging','stage','qa','uat','sandbox','sbx','preprod','pre-prod','nonprod','non-prod','demo','local'];
+var RN_LOWER_ENV_RE = new RegExp('\\b(' + RN_LOWER_ENV_KEYWORDS.join('|') + ')\\b', 'i');
+
+function rnIsLowerEnvIssue(i) {
+  var haystack = (i.summary || '') + ' ' + (i.labels || []).join(' ');
+  return RN_LOWER_ENV_RE.test(haystack);
+}
 
 // Called when user clicks the Release Notes tab
 function rnOnTabOpen() {
@@ -5314,6 +5337,7 @@ async function rnGoStep2() {
     ? new Date(v.releaseDate + 'T12:00:00').toLocaleDateString('en-US', {month:'long', day:'numeric', year:'numeric'})
     : 'TBD';
   document.getElementById('rn-p2-sub').textContent = 'Release ' + nameVal + ' \u00b7 ' + dateStr;
+  rnState.manuallyExcluded = {};
   document.getElementById('rn-issues-list').innerHTML = '<div style="padding:24px;text-align:center;color:var(--text3)">Loading issues...</div>';
   setStatus('Fetching issues for ' + v.name + '...', 'loading');
   try {
@@ -5327,23 +5351,53 @@ async function rnGoStep2() {
     setStatus('Failed to load issues', 'error');
   }
   // Wire filter checkboxes
-  ['rn-excl-task','rn-excl-subtask','rn-excl-spike'].forEach(function(id) {
+  ['rn-excl-task','rn-excl-subtask','rn-excl-spike','rn-excl-nonprod-bugs'].forEach(function(id) {
     var el = document.getElementById(id);
     if (el) el.onchange = rnRenderIssues;
   });
 }
 
 function rnGetIncludedIssues() {
-  var exclTask    = document.getElementById('rn-excl-task')    ? document.getElementById('rn-excl-task').checked    : false;
-  var exclSubtask = document.getElementById('rn-excl-subtask') ? document.getElementById('rn-excl-subtask').checked : false;
-  var exclSpike   = document.getElementById('rn-excl-spike')   ? document.getElementById('rn-excl-spike').checked   : false;
+  var exclTask       = document.getElementById('rn-excl-task')          ? document.getElementById('rn-excl-task').checked          : false;
+  var exclSubtask    = document.getElementById('rn-excl-subtask')       ? document.getElementById('rn-excl-subtask').checked       : false;
+  var exclSpike      = document.getElementById('rn-excl-spike')         ? document.getElementById('rn-excl-spike').checked         : false;
+  var exclNonProdBug = document.getElementById('rn-excl-nonprod-bugs')  ? document.getElementById('rn-excl-nonprod-bugs').checked  : true;
   return rnState.allIssues.filter(function(i) {
+    if (rnState.manuallyExcluded[i.key]) return false;
     var t = (i.type || '').toLowerCase().replace('-','');
-    if (exclTask    && t === 'task')    return false;
-    if (exclSubtask && t === 'subtask') return false;
-    if (exclSpike   && t === 'spike')   return false;
+    if (exclTask       && t === 'task')                              return false;
+    if (exclSubtask    && t === 'subtask')                           return false;
+    if (exclSpike       && t === 'spike')                            return false;
+    if (exclNonProdBug && t === 'bug' && rnIsLowerEnvIssue(i))       return false;
     return true;
   });
+}
+
+function rnToggleManualExclude(key) {
+  if (rnState.manuallyExcluded[key]) delete rnState.manuallyExcluded[key];
+  else rnState.manuallyExcluded[key] = true;
+  rnRenderIssues();
+}
+
+// Bulk-remove every currently flagged Task/Story (Bugs are already handled
+// by the "Non-PROD Bugs" checkbox above, so this targets the rest).
+function rnBulkRemoveFlagged() {
+  var n = 0;
+  rnState.allIssues.forEach(function(i) {
+    var t = (i.type || '').toLowerCase().replace('-','');
+    if (t !== 'bug' && rnIsLowerEnvIssue(i) && !rnState.manuallyExcluded[i.key]) {
+      rnState.manuallyExcluded[i.key] = true;
+      n++;
+    }
+  });
+  rnRenderIssues();
+  setStatus(n ? ('Removed ' + n + ' flagged item' + (n===1?'':'s')) : 'No flagged Tasks/Stories to remove', n ? 'ok' : 'loading');
+}
+
+function rnRestoreAll() {
+  rnState.manuallyExcluded = {};
+  rnRenderIssues();
+  setStatus('Restored all manually-removed issues', 'ok');
 }
 
 function rnRenderIssues() {
@@ -5364,18 +5418,27 @@ function rnRenderIssues() {
   list.innerHTML = '';
   rnState.allIssues.forEach(function(i) {
     var isExcluded = !includedKeys[i.key];
+    var isManual = !!rnState.manuallyExcluded[i.key];
+    var flagged = rnIsLowerEnvIssue(i);
     var row = document.createElement('div');
     row.className = 'rn-issue-row' + (isExcluded ? ' rn-excluded' : '');
     var typeClass = TYPE_STYLE[i.type] || 'rn-itype-task';
     var labelsHtml = (i.labels && i.labels.length)
       ? '<div class="rn-labels-row">' + i.labels.map(function(l){ return '<span class="rn-label">'+escHtml(l)+'</span>'; }).join('') + '</div>'
       : '';
+    var flagHtml = flagged ? '<span class="rn-flag" title="Name suggests a non-PROD environment">&#9888; Non-PROD</span>' : '';
+    var statusText = isManual ? 'removed' : (isExcluded ? 'excluded' : escHtml(i.status || ''));
     row.innerHTML = '<span class="rn-ikey"><a href="https://riversidejira.atlassian.net/browse/' + i.key + '" target="_blank" style="color:var(--blue);text-decoration:none">' + escHtml(i.key) + '</a></span>'
       + '<span class="rn-itype ' + typeClass + '">' + escHtml(i.type) + '</span>'
-      + '<div class="rn-isum-wrap"><span class="rn-isum">' + escHtml(i.summary) + '</span>' + labelsHtml + '</div>'
-      + '<span class="rn-istat">' + (isExcluded ? 'excluded' : escHtml(i.status || '')) + '</span>';
+      + '<div class="rn-isum-wrap"><span class="rn-isum">' + escHtml(i.summary) + '</span>' + '<div class="rn-labels-row">' + flagHtml + '</div>' + labelsHtml + '</div>'
+      + '<span class="rn-istat">' + statusText + '</span>'
+      + '<button class="rn-row-toggle" data-toggle-key="' + escHtml(i.key) + '" title="' + (isManual ? 'Restore this issue' : 'Remove this issue') + '">' + (isManual ? '\u21ba' : '\u2715') + '</button>';
     list.appendChild(row);
   });
+  list.onclick = function(e) {
+    var btn = e.target.closest('[data-toggle-key]');
+    if (btn) rnToggleManualExclude(btn.getAttribute('data-toggle-key'));
+  };
 }
 
 // ── Step 3: Generate ─────────────────────────────────────────────────────
@@ -5626,6 +5689,7 @@ function rnReset() {
   rnState.selectedVersion = null;
   rnState.allIssues = [];
   rnState.categories = [];
+  rnState.manuallyExcluded = {};
   var ni = document.getElementById('rn-name-input'); if (ni) ni.value = '';
   var pa = document.getElementById('rn-pub-area'); if (pa) pa.style.display = 'flex';
   var pr = document.getElementById('rn-pub-result'); if (pr) pr.style.display = 'none';
