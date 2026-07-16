@@ -3512,12 +3512,32 @@ function renderQSummaryStatic() {
   document.getElementById('qs-themes').innerHTML = themesHtml;
 }
 
-function buildQSummaryPrompt() {
-  var themes = getActiveThemes();
-  var quarter = getActiveQuarter().label;
-  var weeksRem = qsSummaryMode==='all' ? 0 : weeksLeft();
+// Shared per-theme data block, reused by both the meta call and each
+// individual theme call so the two prompts stay consistent.
+function qsThemeBlock(t) {
+  var epics=t.epics||[];
+  var totS=epics.reduce(function(a,e){return a+((e.stories&&e.stories.total)||0);},0);
+  var dnS=epics.reduce(function(a,e){return a+((e.stories&&e.stories.done)||0);},0);
+  var inpS=epics.reduce(function(a,e){return a+((e.stories&&e.stories.inprog)||0);},0);
+  var pct=totS>0?Math.round(dnS/totS*100):0;
+  var lines=[];
+  lines.push('--- THEME: '+t.name.toUpperCase()+' — '+pct+'% ('+dnS+'/'+totS+' stories, '+inpS+' in progress) ---');
+  epics.forEach(function(e){
+    var s=e.stories||{done:0,inprog:0,todo:0,total:0,ptsDone:0,ptsTotal:0};
+    var ep=s.total>0?Math.round(s.done/s.total*100):0;
+    lines.push('  EPIC '+e.key+' ['+e.status+'] '+ep+'%: '+e.title);
+    lines.push('    '+s.done+' done, '+s.inprog+' in-progress/review/testing, '+(s.total-s.done-s.inprog)+' to do'+(s.ptsTotal>0?' | '+s.ptsDone+'/'+s.ptsTotal+' pts':'')+(isRisk(e)?' | AT RISK':''));
+    if(e.storyList&&e.storyList.length){
+      var inp=e.storyList.filter(function(s){return s.statusCat==='indeterminate';});
+      var out=e.storyList.filter(function(s){return s.statusCat==='new';});
+      if(inp.length) lines.push('    In progress: '+inp.slice(0,4).map(function(s){return s.key+' ['+s.status+'] '+s.summary.slice(0,60);}).join(' | ')+(inp.length>4?' +'+( inp.length-4)+' more':''));
+      if(out.length) lines.push('    To do: '+out.slice(0,4).map(function(s){return s.key+' '+s.summary.slice(0,60);}).join(' | ')+(out.length>4?' +'+( out.length-4)+' more':''));
+    }
+  });
+  return lines.join('\n');
+}
 
-  // Overall totals
+function qsOverallTotals(themes) {
   var totalStories=0, totalDone=0, totalInprog=0, totalTodo=0, totalPts=0, totalPtsDone=0;
   themes.forEach(function(t){
     (t.epics||[]).forEach(function(e){
@@ -3527,52 +3547,69 @@ function buildQSummaryPrompt() {
       totalPts+=(s.ptsTotal||0); totalPtsDone+=(s.ptsDone||0);
     });
   });
-  var overallPct = totalStories>0?Math.round(totalDone/totalStories*100):0;
+  return { totalStories:totalStories, totalDone:totalDone, totalInprog:totalInprog, totalTodo:totalTodo, totalPts:totalPts, totalPtsDone:totalPtsDone, overallPct: totalStories>0?Math.round(totalDone/totalStories*100):0 };
+}
 
+// One small, focused call per theme — keeps each individual Netlify function
+// invocation fast regardless of how many themes are in the quarter.
+function buildQSummaryThemePrompt(t) {
+  var quarter = getActiveQuarter().label;
   var lines = [];
-  lines.push('You are a senior engineering PM. Write an executive quarterly report for '+quarter+'.');
-  lines.push('IMPORTANT: You MUST cover EVERY theme listed below. Do not skip any theme. Write in plain paragraphs — no markdown, no bullet points, no headers with # or *.');
+  lines.push('You are a senior engineering PM writing one section of a quarterly report for '+quarter+'.');
+  lines.push('Write ONE paragraph (4-7 sentences) of plain prose covering ONLY the theme below. No headers, no bullet points, no markdown, do not restate the theme name as a title.');
+  lines.push('Cover: completion percentage, what was finished, what is in progress, what remains. Reference specific epic keys (e.g. DM-3093) and story counts.');
+  lines.push('');
+  lines.push(qsThemeBlock(t));
+  return lines.join('\n');
+}
+
+// One call for the sections that aren't per-theme (exec summary, outstanding
+// work, risks, outlook). Still sees every theme's data for context, but its
+// own output length doesn't grow with theme count the way the old
+// "one paragraph per theme, must cover ALL themes" single call did — that
+// was the actual cause of the 504/"Inactivity Timeout" on quarters with a
+// lot of themes.
+function buildQSummaryMetaPrompt() {
+  var themes = getActiveThemes();
+  var quarter = getActiveQuarter().label;
+  var weeksRem = qsSummaryMode==='all' ? 0 : weeksLeft();
+  var totals = qsOverallTotals(themes);
+  var lines = [];
+  lines.push('You are a senior engineering PM. Write part of an executive quarterly report for '+quarter+'.');
+  lines.push('Write in plain paragraphs — no markdown, no bullet points, no headers with # or *.');
   lines.push('');
   lines.push('QUARTER: '+quarter+' | '+weeksRem+' weeks remaining');
-  lines.push('OVERALL: '+overallPct+'% complete — '+totalDone+'/'+totalStories+' stories done, '+totalInprog+' in progress/review/testing, '+totalTodo+' to do'+(totalPts>0?' | '+totalPtsDone+'/'+totalPts+' story points':''));
+  lines.push('OVERALL: '+totals.overallPct+'% complete — '+totals.totalDone+'/'+totals.totalStories+' stories done, '+totals.totalInprog+' in progress/review/testing, '+totals.totalTodo+' to do'+(totals.totalPts>0?' | '+totals.totalPtsDone+'/'+totals.totalPts+' story points':''));
   lines.push('THEMES IN THIS QUARTER: '+themes.map(function(t){return t.name;}).join(', '));
   lines.push('');
-
-  themes.forEach(function(t){
-    var epics=t.epics||[];
-    var totS=epics.reduce(function(a,e){return a+((e.stories&&e.stories.total)||0);},0);
-    var dnS=epics.reduce(function(a,e){return a+((e.stories&&e.stories.done)||0);},0);
-    var inpS=epics.reduce(function(a,e){return a+((e.stories&&e.stories.inprog)||0);},0);
-    var pct=totS>0?Math.round(dnS/totS*100):0;
-    lines.push('--- THEME: '+t.name.toUpperCase()+' — '+pct+'% ('+dnS+'/'+totS+' stories, '+inpS+' in progress) ---');
-    epics.forEach(function(e){
-      var s=e.stories||{done:0,inprog:0,todo:0,total:0,ptsDone:0,ptsTotal:0};
-      var ep=s.total>0?Math.round(s.done/s.total*100):0;
-      lines.push('  EPIC '+e.key+' ['+e.status+'] '+ep+'%: '+e.title);
-      lines.push('    '+s.done+' done, '+s.inprog+' in-progress/review/testing, '+(s.total-s.done-s.inprog)+' to do'+(s.ptsTotal>0?' | '+s.ptsDone+'/'+s.ptsTotal+' pts':'')+(isRisk(e)?' | AT RISK':''));
-      if(e.storyList&&e.storyList.length){
-        var inp=e.storyList.filter(function(s){return s.statusCat==='indeterminate';});
-        var out=e.storyList.filter(function(s){return s.statusCat==='new';});
-        if(inp.length) lines.push('    In progress: '+inp.slice(0,4).map(function(s){return s.key+' ['+s.status+'] '+s.summary.slice(0,60);}).join(' | ')+(inp.length>4?' +'+( inp.length-4)+' more':''));
-        if(out.length) lines.push('    To do: '+out.slice(0,4).map(function(s){return s.key+' '+s.summary.slice(0,60);}).join(' | ')+(out.length>4?' +'+( out.length-4)+' more':''));
-      }
-    });
-    lines.push('');
-  });
-
-  lines.push('INSTRUCTIONS — Write exactly these 5 sections as plain prose paragraphs separated by blank lines. Label each section clearly:');
+  themes.forEach(function(t){ lines.push(qsThemeBlock(t)); lines.push(''); });
+  lines.push('INSTRUCTIONS — Write exactly two parts in plain prose, separated by a line containing only ===SPLIT=== and nothing else. Do NOT write a per-theme breakdown — that section is written separately elsewhere.');
   lines.push('');
-  lines.push('EXECUTIVE SUMMARY: 2-3 sentences. Overall completion percentage, total stories done vs total, key wins this quarter.');
+  lines.push('PART 1 — EXECUTIVE SUMMARY: 2-3 sentences. Overall completion percentage, total stories done vs total, key wins this quarter.');
   lines.push('');
-  lines.push('THEME BREAKDOWN: One paragraph per theme (you must cover all '+themes.length+' themes: '+themes.map(function(t){return t.name;}).join(', ')+'). For each: completion %, epics status, what was finished, what is in progress, what remains.');
+  lines.push('===SPLIT===');
   lines.push('');
-  lines.push('OUTSTANDING WORK: The most critical incomplete items. Name specific epics and story keys. Include story counts.');
-  lines.push('');
-  lines.push('RISKS & BLOCKERS: Epics or stories marked AT RISK. What is blocking them. Recommended action.');
-  lines.push('');
-  lines.push('OUTLOOK: With '+weeksRem+' weeks remaining, is the quarter on track? What must happen to close the gap? Be direct.');
-
+  lines.push('PART 2 — write these three sections, each on its own line labeled in ALL CAPS followed by a colon, then its content:');
+  lines.push('OUTSTANDING WORK: the most critical incomplete items. Name specific epics and story keys. Include story counts.');
+  lines.push('RISKS & BLOCKERS: epics or stories marked AT RISK. What is blocking them. Recommended action.');
+  lines.push('OUTLOOK: with '+weeksRem+' weeks remaining, is the quarter on track? What must happen to close the gap? Be direct.');
   return lines.join('\n');
+}
+
+async function qsFetchSummary(title, description) {
+  var resp = await fetch('/api/summarize', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ title: title, description: description }),
+  });
+  if (!resp.ok) {
+    var errText = await resp.text();
+    throw new Error('Server error ' + resp.status + ': ' + errText.slice(0,200));
+  }
+  var data = await resp.json();
+  if (data.error) throw new Error(data.error);
+  if (!data.summary) throw new Error('No summary returned. Response: ' + JSON.stringify(data).slice(0,200));
+  return data.summary;
 }
 
 async function generateQSummary(forceRegen) {
@@ -3586,13 +3623,21 @@ async function generateQSummary(forceRegen) {
   document.getElementById('qs-narrative-wrap').style.display='none';
   document.getElementById('qs-gen-btn').style.display='none';
 
-  var msgs = [
-    'Analyzing themes and epics...',
-    'Calculating completion rates...',
-    'Identifying outstanding work...',
-    'Assessing risks...',
-    'Writing quarterly narrative...',
-  ];
+  var msgs = themes.length > 1
+    ? [
+        'Analyzing ' + themes.length + ' themes in parallel...',
+        'Calculating completion rates...',
+        'Identifying outstanding work...',
+        'Assessing risks...',
+        'Merging sections together...',
+      ]
+    : [
+        'Analyzing themes and epics...',
+        'Calculating completion rates...',
+        'Identifying outstanding work...',
+        'Assessing risks...',
+        'Writing quarterly narrative...',
+      ];
   var mi = 0;
   var msgTimer = setInterval(function(){
     mi = (mi+1)%msgs.length;
@@ -3601,26 +3646,37 @@ async function generateQSummary(forceRegen) {
   }, 1800);
 
   try {
-    var prompt = buildQSummaryPrompt();
-    var resp = await fetch('/api/summarize', {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ title: getActiveQuarter().label+' Quarterly Summary', description: prompt })
+    var quarter = getActiveQuarter().label;
+    var metaPromise = qsFetchSummary(quarter + ' Quarterly Summary \u2014 Overview', buildQSummaryMetaPrompt());
+    var themePromises = themes.map(function(t) {
+      return qsFetchSummary(quarter + ' Quarterly Summary \u2014 ' + t.name, buildQSummaryThemePrompt(t));
     });
-    var result = await resp.json();
+    var results = await Promise.all([metaPromise].concat(themePromises));
     clearInterval(msgTimer);
 
-    if(result.summary) {
-      document.getElementById('qs-loading').style.display='none';
-      document.getElementById('qs-narrative-wrap').style.display='block';
-      document.getElementById('qs-narrative').innerHTML = mdToHtml(result.summary);
-      document.getElementById('qs-gen-time').textContent = 'Generated '+new Date().toLocaleString();
-      document.getElementById('qs-regen-btn').style.display='inline-flex';
-      document.getElementById('qs-export-btn').style.display='inline-flex';
-      setStatus('Quarterly summary generated','ok');
-    } else {
-      throw new Error(result.error||'No response');
-    }
+    var metaText = results[0];
+    var themeTexts = results.slice(1);
+    var splitParts = metaText.split('===SPLIT===');
+    var execSummary = (splitParts[0] || '').trim();
+    var restSections = (splitParts[1] || metaText).trim(); // fall back to whole text if split marker got dropped
+
+    var themeBreakdown = themes.map(function(t, i) {
+      return t.name + ' \u2014 ' + (themeTexts[i] || '').trim();
+    }).join('\n\n');
+
+    var combined = 'EXECUTIVE SUMMARY:\n\n' + execSummary
+      + '\n\nTHEME BREAKDOWN:\n\n' + themeBreakdown
+      + '\n\n' + restSections;
+
+    if(result_summary_is_empty(combined)) throw new Error('AI returned an empty summary.');
+
+    document.getElementById('qs-loading').style.display='none';
+    document.getElementById('qs-narrative-wrap').style.display='block';
+    document.getElementById('qs-narrative').innerHTML = mdToHtml(combined);
+    document.getElementById('qs-gen-time').textContent = 'Generated '+new Date().toLocaleString();
+    document.getElementById('qs-regen-btn').style.display='inline-flex';
+    document.getElementById('qs-export-btn').style.display='inline-flex';
+    setStatus('Quarterly summary generated','ok');
   } catch(err) {
     clearInterval(msgTimer);
     document.getElementById('qs-loading').style.display='none';
@@ -3630,6 +3686,8 @@ async function generateQSummary(forceRegen) {
     setStatus('Summary failed: '+err.message,'error');
   }
 }
+
+function result_summary_is_empty(s) { return !s || !s.replace(/[^a-zA-Z0-9]/g,'').length; }
 
 function exportQSummary() {
   var title = document.getElementById('qs-title').textContent;
