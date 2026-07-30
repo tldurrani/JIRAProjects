@@ -5233,7 +5233,7 @@ var bugsState = {
   project: null,           // selected project key, e.g. 'DM'
   projects: [],            // [{key,name}]
   projectsLoaded: false,
-  statusMode: 'open',      // 'open' | 'closed' | 'all'
+  statusFilter: null,      // null = all statuses; otherwise {statusName: true} for ones to SHOW
   severityFilter: 'all',
   teamFilter: 'all',
   sort: {col:'severity', dir:'asc'},
@@ -5260,6 +5260,12 @@ async function bugsLoadProjects(){
   }
 }
 
+// Pulls every bug in the project regardless of status — status filtering
+// happens client-side against the *literal* Jira status name (see
+// bugsStatusOptions/bugsToggleStatus below), not Jira's generic To Do/In
+// Progress/Done category. Custom workflow statuses like "Postponed",
+// "Declined", or "Duplicate" don't reliably map to those generic buckets,
+// so relying on statusCategory was hiding/miscounting real bugs.
 async function loadBugs(){
   if(bugsState.loading) return;
   bugsState.loading = true;
@@ -5273,10 +5279,7 @@ async function loadBugs(){
   }
 
   try {
-    var statusClause = bugsState.statusMode==='open' ? ' AND statusCategory != Done'
-      : bugsState.statusMode==='closed' ? ' AND statusCategory = Done'
-      : '';
-    var jql = 'project = "'+bugsState.project+'" AND issuetype = Bug'+statusClause+' ORDER BY cf[10040] ASC';
+    var jql = 'project = "'+bugsState.project+'" AND issuetype = Bug ORDER BY cf[10040] ASC';
     var fields = 'summary,status,customfield_10040,customfield_10039,assignee,created,resolutiondate';
     var all = [], startAt = 0, pageSize = 100, guard = 0;
     while (guard < 30) {
@@ -5315,12 +5318,7 @@ function bugsSetProject(key){
   bugsState.project = key;
   bugsState.loaded = false;
   bugsState.teamFilter = 'all';
-  loadBugs();
-}
-function bugsSetStatusMode(mode){
-  if(bugsState.statusMode===mode) return;
-  bugsState.statusMode = mode;
-  bugsState.loaded = false;
+  bugsState.statusFilter = null;
   loadBugs();
 }
 function bugsFilter(f){ bugsState.severityFilter=f; renderBugs(); }
@@ -5337,10 +5335,38 @@ function bugsTeamOptions(){
   return Object.keys(seen).sort();
 }
 
+// Real, literal status names present in the data — discovered from actual
+// bugs, never hardcoded, so this always matches whatever your Jira workflow
+// actually uses (e.g. "Ready To Start Work", "Postponed", "Declined",
+// "Duplicate", "Ready For Production" — not a generic Open/Closed guess).
+function bugsStatusOptions(){
+  var seen={};
+  bugsState.bugs.forEach(function(b){ if(b.status) seen[b.status]=true; });
+  return Object.keys(seen).sort();
+}
+
+function bugsToggleStatus(name){
+  var opts = bugsStatusOptions();
+  if(bugsState.statusFilter===null){
+    // Currently "all selected" — clicking one deselects just that one.
+    var all={}; opts.forEach(function(s){ all[s]=true; });
+    delete all[name];
+    bugsState.statusFilter = all;
+  } else {
+    if(bugsState.statusFilter[name]) delete bugsState.statusFilter[name];
+    else bugsState.statusFilter[name]=true;
+    // If everything ends up selected again, collapse back to "all" (null).
+    if(opts.length && opts.every(function(s){ return bugsState.statusFilter[s]; })) bugsState.statusFilter = null;
+  }
+  renderBugs();
+}
+function bugsSelectAllStatuses(){ bugsState.statusFilter = null; renderBugs(); }
+
 function bugsGetFilteredSorted(){
   var filtered = bugsState.bugs.slice();
   if(bugsState.severityFilter!=='all') filtered = filtered.filter(function(b){ return b.severity===bugsState.severityFilter; });
   if(bugsState.teamFilter!=='all') filtered = filtered.filter(function(b){ return (b.team||'(none)')===bugsState.teamFilter; });
+  if(bugsState.statusFilter!==null) filtered = filtered.filter(function(b){ return !!bugsState.statusFilter[b.status]; });
   var col=bugsState.sort.col, dir=bugsState.sort.dir;
   filtered.sort(function(a,b){
     var av,bv;
@@ -5369,16 +5395,16 @@ function bugsCsvEscape(v){
 
 function bugsExportCSV(){
   var filtered = bugsGetFilteredSorted();
-  var header = ['Key','Summary','Severity','Status','Team','Assignee','Created','Closed'];
+  var header = ['Key','Summary','Severity','Status','Team','Created','Assignee','Closed'];
   var rows = [header].concat(filtered.map(function(b){
-    return [b.key, b.summary, b.severity, b.status, b.team||'', b.assignee, bugsFmtDate(b.created), bugsFmtDate(b.resolutionDate)];
+    return [b.key, b.summary, b.severity, b.status, b.team||'', bugsFmtDate(b.created), b.assignee, bugsFmtDate(b.resolutionDate)];
   }));
   var csv = rows.map(function(r){ return r.map(bugsCsvEscape).join(','); }).join('\r\n');
   var blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
   var url = URL.createObjectURL(blob);
   var a = document.createElement('a');
   a.href = url;
-  a.download = 'bugs-'+(bugsState.project||'export')+'-'+bugsState.statusMode+'-'+new Date().toISOString().slice(0,10)+'.csv';
+  a.download = 'bugs-'+(bugsState.project||'export')+'-'+new Date().toISOString().slice(0,10)+'.csv';
   document.body.appendChild(a); a.click(); document.body.removeChild(a);
   URL.revokeObjectURL(url);
 }
@@ -5451,19 +5477,13 @@ function renderBugs(){
 
   var html='';
 
-  // Project selector + status mode
+  // Project selector
   html += '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:14px">';
   html += '<select onchange="bugsSetProject(this.value)" style="font-size:12px;padding:5px 10px;border-radius:6px;border:0.5px solid var(--border2);background:var(--bg3);color:var(--text)">';
   (bugsState.projects||[]).forEach(function(p){
     html += '<option value="'+escHtml(p.key)+'"'+(p.key===bugsState.project?' selected':'')+'>'+escHtml(p.key)+' — '+escHtml(p.name)+'</option>';
   });
   html += '</select>';
-  html += '<div style="display:flex;gap:4px;background:var(--bg3);border:0.5px solid var(--border2);border-radius:8px;padding:3px">';
-  [['open','Open'],['closed','Closed'],['all','All']].forEach(function(m){
-    var on = bugsState.statusMode===m[0];
-    html += '<button onclick="bugsSetStatusMode(\''+m[0]+'\')" style="font-size:11px;padding:4px 12px;border-radius:6px;border:none;cursor:pointer;background:'+(on?'var(--blue)':'transparent')+';color:'+(on?'#fff':'var(--text2)')+'">'+m[1]+'</button>';
-  });
-  html += '</div>';
   html += '<button class="btn btn-ghost btn-sm" onclick="bugsExportCSV()" style="margin-left:auto">&#8681; Export CSV</button>';
   html += '<button onclick="bugsState.loaded=false;loadBugs()" style="font-size:11px;padding:5px 10px;border-radius:6px;border:0.5px solid var(--border2);background:transparent;color:var(--text2);cursor:pointer">&#8635; Refresh</button>';
   html += '</div>';
@@ -5498,10 +5518,25 @@ function renderBugs(){
   html+='<span style="margin-left:auto;font-size:11px;color:var(--text3)">'+filtered.length+' bugs</span>';
   html+='</div>';
 
-  var grid='80px 1fr 100px 90px 120px 90px 100px 100px';
+  // Status filter — literal Jira status names (e.g. Ready To Start Work,
+  // Postponed, Declined, Duplicate, Ready For Production), discovered from
+  // the actual data, not a generic Open/Closed guess.
+  var statusOpts = bugsStatusOptions();
+  if(statusOpts.length){
+    html+='<div style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap;align-items:center">';
+    html+='<span style="font-size:12px;color:var(--text3)">Status:</span>';
+    statusOpts.forEach(function(s){
+      var on = bugsState.statusFilter===null || !!bugsState.statusFilter[s];
+      html+='<span data-bst="'+escHtml(s)+'" onclick="bugsToggleStatus(this.dataset.bst)" style="padding:3px 10px;border-radius:14px;font-size:11px;cursor:pointer;border:1.5px solid '+(on?'var(--blue)':'var(--border2)')+';color:'+(on?'var(--text)':'var(--text3)')+';background:'+(on?'rgba(59,130,246,0.1)':'transparent')+'">'+escHtml(s)+'</span>';
+    });
+    if(bugsState.statusFilter!==null) html+='<span onclick="bugsSelectAllStatuses()" style="font-size:11px;color:var(--blue);cursor:pointer;text-decoration:underline">Select all</span>';
+    html+='</div>';
+  }
+
+  var grid='80px 1fr 90px 130px 110px 90px 90px 90px';
   html+='<div style="background:var(--bg2);border:0.5px solid var(--border);border-radius:12px;overflow:hidden">';
   html+='<div style="display:grid;grid-template-columns:'+grid+';gap:10px;padding:9px 14px;background:var(--bg3);border-bottom:0.5px solid var(--border)">';
-  [['key','Key'],['summary','Summary'],['severity','Severity'],['status','Status'],['team','Team'],['assignee','Assignee'],['created','Created'],['resolutionDate','Closed']].forEach(function(c){
+  [['key','Key'],['summary','Summary'],['severity','Severity'],['status','Status'],['team','Team'],['created','Created'],['assignee','Assignee'],['resolutionDate','Closed']].forEach(function(c){
     html+='<span data-bs="'+c[0]+'" onclick="bugsSetSort(this.dataset.bs)" style="font-size:10px;color:var(--text3);font-family:var(--font-mono);text-transform:uppercase;cursor:pointer;user-select:none">'+c[1]+arrow(c[0])+'</span>';
   });
   html+='</div>';
@@ -5517,10 +5552,10 @@ function renderBugs(){
         +'<span style="font-family:var(--font-mono);font-size:11px;color:var(--blue);white-space:nowrap">'+escHtml(b.key)+'</span>'
         +'<div style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)" title="'+escHtml(b.summary)+'">'+escHtml(b.summary)+'</div>'
         +'<div><span style="font-size:10px;padding:2px 7px;border-radius:8px;font-weight:600;font-family:var(--font-mono);background:'+sc+'22;color:'+sc+'">'+escHtml(b.severity)+'</span></div>'
-        +'<div><span style="font-size:10px;padding:2px 7px;border-radius:6px;white-space:nowrap;background:'+stBg+';color:'+stC+'">'+escHtml(b.status)+'</span></div>'
+        +'<div><span style="font-size:10px;padding:2px 7px;border-radius:6px;white-space:nowrap;background:'+stBg+';color:'+stC+'" title="Jira status">'+escHtml(b.status)+'</span></div>'
         +'<div style="font-size:11px;color:var(--text3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+escHtml(b.team)+'">'+escHtml(b.team||'—')+'</div>'
-        +'<div style="font-size:11px;color:var(--text3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+escHtml(b.assignee)+'">'+escHtml(b.assignee)+'</div>'
         +'<div style="font-size:11px;color:var(--text3);white-space:nowrap">'+(bugsFmtDate(b.created)||'—')+'</div>'
+        +'<div style="font-size:11px;color:var(--text3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+escHtml(b.assignee)+'">'+escHtml(b.assignee)+'</div>'
         +'<div style="font-size:11px;color:var(--text3);white-space:nowrap">'+(bugsFmtDate(b.resolutionDate)||'—')+'</div>'
         +'</div>';
     });
