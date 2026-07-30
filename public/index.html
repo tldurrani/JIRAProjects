@@ -345,6 +345,16 @@ document.addEventListener('DOMContentLoaded', initFirebase);
   </div>
 </div>
 
+<div class="modal-overlay" id="bug-detail-modal" onclick="if(event.target===this)closeBugDetail()">
+  <div class="modal" style="width:640px">
+    <div class="modal-hdr">
+      <div class="modal-title" id="bug-detail-title">Bug</div>
+      <button class="btn btn-ghost btn-sm" onclick="closeBugDetail()">Close</button>
+    </div>
+    <div class="modal-body" id="bug-detail-body"></div>
+  </div>
+</div>
+
 <div class="header">
   <div class="header-top">
     <div><div class="eyebrow">riversidejira.atlassian.net</div><h1 class="h-title">Quarterly Tracker</h1><div class="h-sub" id="hdr-sub">Loading...</div></div>
@@ -4834,22 +4844,29 @@ function plRenderTeamVelocity(){
   var body = document.getElementById('pl-team-vel-body'); if(!body) return;
   var aq = getActiveQuarter();
   var we = Math.max(1, (new Date() - new Date(aq.start)) / (7*864e5));
-  var TEAMS = [
-    { name:'INDY',  color:'#3b82f6' },
-    { name:'X-Men', color:'#a855f7' },
-  ];
 
-  // Accumulate pts per team from storyList labels
+  // Team buckets are discovered from the actual Agile Team field values on
+  // the stories themselves — not a hardcoded list. (A previous version
+  // hardcoded 'INDY' and 'X-Men', but those are Jira *labels*, not Agile
+  // Team field values, so real team names never matched and this chart
+  // silently broke or stayed empty.)
+  var TEAM_COLORS = ['#3b82f6','#a855f7','#f59e0b','#22c55e','#ec4899','#06b6d4','#eab308','#8b5cf6'];
   var teamData = {};
-  TEAMS.forEach(function(t){ teamData[t.name]={donePts:0,inprogPts:0,todoPts:0,doneStories:0,totalPts:0}; });
-  teamData['Untagged'] = {donePts:0,inprogPts:0,todoPts:0,doneStories:0,totalPts:0};
+  var teamOrder = [];
+  function getBucket(name) {
+    if (!teamData[name]) {
+      teamData[name] = {donePts:0,inprogPts:0,todoPts:0,doneStories:0,totalPts:0};
+      teamOrder.push(name);
+    }
+    return teamData[name];
+  }
 
   getActiveThemes().forEach(function(t){
     (t.epics||[]).forEach(function(e){
       plFilterStories(e.storyList).forEach(function(s){
         var pts = s.points||0;
         var teamName = s.team || 'Untagged';
-        var d = teamData[teamName];
+        var d = getBucket(teamName);
         d.totalPts += pts;
         if(s.statusCat==='done'){ d.donePts+=pts; d.doneStories++; }
         else if(s.statusCat==='indeterminate') d.inprogPts+=pts;
@@ -4858,20 +4875,22 @@ function plRenderTeamVelocity(){
     });
   });
 
-  var rows = TEAMS.map(function(t){
-    var d = teamData[t.name];
-    var vel = Math.round((d.donePts/we)*10)/10;
-    return {name:t.name, color:t.color, vel:vel, donePts:d.donePts, inprogPts:d.inprogPts, todoPts:d.todoPts, totalPts:d.totalPts, doneStories:d.doneStories};
+  // Keep discovery order stable, but always show Untagged last.
+  teamOrder.sort(function(a,b){
+    if(a==='Untagged') return 1;
+    if(b==='Untagged') return -1;
+    return 0;
   });
 
-  // Add untagged if it has data
-  var ut = teamData['Untagged'];
-  if(ut.totalPts>0){
-    rows.push({name:'Untagged', color:'#64748b', vel:Math.round((ut.donePts/we)*10)/10, donePts:ut.donePts, inprogPts:ut.inprogPts, todoPts:ut.todoPts, totalPts:ut.totalPts, doneStories:ut.doneStories});
-  }
+  var rows = teamOrder.map(function(name,i){
+    var d = teamData[name];
+    var vel = Math.round((d.donePts/we)*10)/10;
+    var color = name==='Untagged' ? '#64748b' : TEAM_COLORS[i % TEAM_COLORS.length];
+    return {name:name, color:color, vel:vel, donePts:d.donePts, inprogPts:d.inprogPts, todoPts:d.todoPts, totalPts:d.totalPts, doneStories:d.doneStories};
+  });
 
-  if(!rows.some(function(r){return r.totalPts>0;})){
-    body.innerHTML='<div style="padding:16px;color:var(--text3);font-size:12px;text-align:center">No INDY or X-Men-Backlog labelled stories found — refresh epics to load story labels</div>';
+  if(!rows.length || !rows.some(function(r){return r.totalPts>0;})){
+    body.innerHTML='<div style="padding:16px;color:var(--text3);font-size:12px;text-align:center">No stories with an Agile Team field value found for this quarter — refresh epics to load the latest data</div>';
     return;
   }
 
@@ -5206,121 +5225,313 @@ function clearSevFilter(){
 
 // ═══════════════════════════════════════════════════════
 // BUGS MODULE — dedicated bug dashboard
+// Scoped by Jira PROJECT (e.g. DM), not by epic/quarter — a bug can be
+// missed by the epic-based view if it's not linked into whatever the
+// current quarter's plan happens to include. This queries Jira directly.
 // ═══════════════════════════════════════════════════════
-var bugsState={filter:'all',sort:{col:'severity',dir:'asc'},bugs:[],loading:false,loaded:false};
-var SEV_ORDER={S1:1,S2:2,S3:3,S4:4,'':9};
-var SEV_COLOR={S1:'#f87171',S2:'#fbbf24',S3:'#60a5fa',S4:'#a78bfa'};
+var bugsState = {
+  project: null,           // selected project key, e.g. 'DM'
+  projects: [],            // [{key,name}]
+  projectsLoaded: false,
+  statusMode: 'open',      // 'open' | 'closed' | 'all'
+  severityFilter: 'all',
+  teamFilter: 'all',
+  sort: {col:'severity', dir:'asc'},
+  bugs: [],
+  loading: false,
+  loaded: false,
+  loadError: null,
+};
+var BUGS_DEFAULT_PROJECT = 'DM';
+var SEV_ORDER = {S1:1,S2:2,S3:3,S4:4,'':9};
+var SEV_COLOR = {S1:'#f87171',S2:'#fbbf24',S3:'#60a5fa',S4:'#a78bfa'};
+
+async function bugsLoadProjects(){
+  if(bugsState.projectsLoaded) return;
+  try {
+    var resp = await jiraGet('/rest/api/3/project?maxResults=200');
+    var list = Array.isArray(resp) ? resp : (resp.values||[]);
+    bugsState.projects = list.map(function(p){ return {key:p.key, name:p.name}; }).sort(function(a,b){ return a.key<b.key?-1:(a.key>b.key?1:0); });
+  } catch(e) { console.error('bugsLoadProjects:', e); bugsState.projects = []; }
+  bugsState.projectsLoaded = true;
+  if(!bugsState.project){
+    var hasDefault = bugsState.projects.some(function(p){ return p.key===BUGS_DEFAULT_PROJECT; });
+    bugsState.project = hasDefault ? BUGS_DEFAULT_PROJECT : (bugsState.projects[0] && bugsState.projects[0].key) || null;
+  }
+}
 
 async function loadBugs(){
   if(bugsState.loading) return;
-  bugsState.loading=true;
-  var root=document.getElementById('bugs-root');
-  if(root) root.innerHTML='<div style="padding:40px;text-align:center;color:var(--text3)">&#8635; Loading bugs from Jira…</div>';
-  try{
-    var key=(activeQuarterKey&&activeQuarterKey!=='__all__')?activeQuarterKey:sortedQuarterKeys().pop();
-    var epicKeys=[];
-    if(key)(state.quarters[key].themes||[]).forEach(function(t){(t.epics||[]).forEach(function(e){epicKeys.push({key:e.key,theme:t.name});});});
-    if(!epicKeys.length){bugsState.bugs=[];bugsState.loaded=true;bugsState.loading=false;renderBugs();return;}
-    var epicMap={};
-    epicKeys.forEach(function(e){epicMap[e.key]=e;});
-    var jql='parent in ('+epicKeys.map(function(e){return '"'+e.key+'"';}).join(',')+')'
-      +' AND cf[10040] is not EMPTY AND statusCategory != Done'
-      +' AND status not in (Cancelled,Canceled,Postponed)'
-      +' ORDER BY cf[10040] ASC';
-    var resp=await jiraGet('/rest/api/3/search/jql?jql='+encodeURIComponent(jql)+'&fields=summary,status,priority,assignee,customfield_10040,parent&maxResults=500');
-    bugsState.bugs=(resp.issues||[]).map(function(i){
-      var pk=i.fields.parent&&i.fields.parent.key;
-      var ei=epicMap[pk]||{key:pk,theme:''};
-      return {key:i.key,summary:(i.fields.summary||'').trim(),
-        severity:(i.fields.customfield_10040&&i.fields.customfield_10040.value)||'',
-        status:(i.fields.status&&i.fields.status.name)||'',
-        statusCat:(i.fields.status&&i.fields.status.statusCategory&&i.fields.status.statusCategory.key)||'new',
-        assignee:(i.fields.assignee&&i.fields.assignee.displayName)||'Unassigned',
-        epicKey:pk||'',theme:ei.theme};
+  bugsState.loading = true;
+  bugsState.loadError = null;
+  var root = document.getElementById('bugs-root');
+  if(root) root.innerHTML = '<div style="padding:40px;text-align:center;color:var(--text3)">&#8635; Loading bugs from Jira…</div>';
+
+  await bugsLoadProjects();
+  if(!bugsState.project){
+    bugsState.bugs=[]; bugsState.loaded=true; bugsState.loading=false; renderBugs(); return;
+  }
+
+  try {
+    var statusClause = bugsState.statusMode==='open' ? ' AND statusCategory != Done'
+      : bugsState.statusMode==='closed' ? ' AND statusCategory = Done'
+      : '';
+    var jql = 'project = "'+bugsState.project+'" AND issuetype = Bug'+statusClause+' ORDER BY cf[10040] ASC';
+    var fields = 'summary,status,customfield_10040,customfield_10039,assignee,created,resolutiondate';
+    var all = [], startAt = 0, pageSize = 100, guard = 0;
+    while (guard < 30) {
+      var resp = await jiraGet('/rest/api/3/search/jql?jql='+encodeURIComponent(jql)+'&fields='+fields+'&maxResults='+pageSize+'&startAt='+startAt);
+      all = all.concat(resp.issues||[]);
+      guard++;
+      if (all.length >= (resp.total||0) || !(resp.issues||[]).length) break;
+      startAt += pageSize;
+    }
+    bugsState.bugs = all.map(function(i){
+      return {
+        key: i.key,
+        summary: (i.fields.summary||'').trim(),
+        severity: (i.fields.customfield_10040 && i.fields.customfield_10040.value) || '',
+        status: (i.fields.status && i.fields.status.name) || '',
+        statusCat: (i.fields.status && i.fields.status.statusCategory && i.fields.status.statusCategory.key) || 'new',
+        team: (i.fields.customfield_10039 && i.fields.customfield_10039.value) || '',
+        assignee: (i.fields.assignee && i.fields.assignee.displayName) || 'Unassigned',
+        created: i.fields.created || '',
+        resolutionDate: i.fields.resolutiondate || '',
+      };
     });
-    bugsState.loaded=true;
-  }catch(e){console.error('loadBugs:',e);}
-  bugsState.loading=false;
+    bugsState.loaded = true;
+  } catch(e) {
+    console.error('loadBugs:', e);
+    bugsState.loadError = e.message;
+    bugsState.bugs = [];
+    bugsState.loaded = true;
+  }
+  bugsState.loading = false;
   renderBugs();
 }
 
-function bugsFilter(f){bugsState.filter=f;renderBugs();}
+function bugsSetProject(key){
+  if(bugsState.project===key) return;
+  bugsState.project = key;
+  bugsState.loaded = false;
+  bugsState.teamFilter = 'all';
+  loadBugs();
+}
+function bugsSetStatusMode(mode){
+  if(bugsState.statusMode===mode) return;
+  bugsState.statusMode = mode;
+  bugsState.loaded = false;
+  loadBugs();
+}
+function bugsFilter(f){ bugsState.severityFilter=f; renderBugs(); }
+function bugsFilterTeam(t){ bugsState.teamFilter=t; renderBugs(); }
 function bugsSetSort(col){
   if(bugsState.sort.col===col) bugsState.sort.dir=bugsState.sort.dir==='asc'?'desc':'asc';
   else{bugsState.sort.col=col;bugsState.sort.dir='asc';}
   renderBugs();
 }
 
+function bugsTeamOptions(){
+  var seen={};
+  bugsState.bugs.forEach(function(b){ if(b.team) seen[b.team]=true; });
+  return Object.keys(seen).sort();
+}
+
+function bugsGetFilteredSorted(){
+  var filtered = bugsState.bugs.slice();
+  if(bugsState.severityFilter!=='all') filtered = filtered.filter(function(b){ return b.severity===bugsState.severityFilter; });
+  if(bugsState.teamFilter!=='all') filtered = filtered.filter(function(b){ return (b.team||'(none)')===bugsState.teamFilter; });
+  var col=bugsState.sort.col, dir=bugsState.sort.dir;
+  filtered.sort(function(a,b){
+    var av,bv;
+    if(col==='severity'){ av=SEV_ORDER[a.severity]||9; bv=SEV_ORDER[b.severity]||9; }
+    else if(col==='created'||col==='resolutionDate'){ av=a[col]?new Date(a[col]).getTime():0; bv=b[col]?new Date(b[col]).getTime():0; }
+    else{ av=(a[col]||'').toString().toLowerCase(); bv=(b[col]||'').toString().toLowerCase(); }
+    if(av<bv) return dir==='asc'?-1:1;
+    if(av>bv) return dir==='asc'?1:-1;
+    return 0;
+  });
+  return filtered;
+}
+
+function bugsFmtDate(iso){
+  if(!iso) return '';
+  var d=new Date(iso);
+  if(isNaN(d.getTime())) return '';
+  return d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
+}
+
+function bugsCsvEscape(v){
+  v = String(v==null?'':v);
+  if(/[",\n\r]/.test(v)) v = '"'+v.replace(/"/g,'""')+'"';
+  return v;
+}
+
+function bugsExportCSV(){
+  var filtered = bugsGetFilteredSorted();
+  var header = ['Key','Summary','Severity','Status','Team','Assignee','Created','Closed'];
+  var rows = [header].concat(filtered.map(function(b){
+    return [b.key, b.summary, b.severity, b.status, b.team||'', b.assignee, bugsFmtDate(b.created), bugsFmtDate(b.resolutionDate)];
+  }));
+  var csv = rows.map(function(r){ return r.map(bugsCsvEscape).join(','); }).join('\r\n');
+  var blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a');
+  a.href = url;
+  a.download = 'bugs-'+(bugsState.project||'export')+'-'+bugsState.statusMode+'-'+new Date().toISOString().slice(0,10)+'.csv';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+async function openBugDetail(key){
+  var modal = document.getElementById('bug-detail-modal');
+  var body = document.getElementById('bug-detail-body');
+  var titleEl = document.getElementById('bug-detail-title');
+  if(!modal||!body) return;
+  var quick = bugsState.bugs.find(function(b){ return b.key===key; }) || {key:key};
+  titleEl.innerHTML = '<a href="https://riversidejira.atlassian.net/browse/'+key+'" target="_blank" style="color:inherit;text-decoration:none">'+escHtml(key)+'</a>';
+  body.innerHTML = '<div style="padding:24px;text-align:center;color:var(--text3)">&#8635; Loading…</div>';
+  modal.classList.add('open');
+
+  try {
+    var resp = await jiraGet('/rest/api/3/issue/'+encodeURIComponent(key)+'?fields=summary,description,status,customfield_10040,customfield_10039,assignee,created,resolutiondate&expand=renderedFields');
+    var f = resp.fields || {};
+    var sev = (f.customfield_10040 && f.customfield_10040.value) || quick.severity || '';
+    var team = (f.customfield_10039 && f.customfield_10039.value) || quick.team || '';
+    var status = (f.status && f.status.name) || quick.status || '';
+    var assignee = (f.assignee && f.assignee.displayName) || quick.assignee || 'Unassigned';
+    var created = f.created || quick.created || '';
+    var resolved = f.resolutiondate || quick.resolutionDate || '';
+    var descHtml = (resp.renderedFields && resp.renderedFields.description) || '<span style="color:var(--text3)">No description</span>';
+    var sc = SEV_COLOR[sev] || 'var(--text3)';
+
+    body.innerHTML =
+      '<div style="font-size:15px;font-weight:600;color:var(--text)">'+escHtml(f.summary||quick.summary||'')+'</div>'
+      + '<div style="display:flex;gap:8px;flex-wrap:wrap">'
+        + (sev?'<span style="font-size:10px;padding:2px 8px;border-radius:8px;font-weight:600;font-family:var(--font-mono);background:'+sc+'22;color:'+sc+'">'+escHtml(sev)+'</span>':'')
+        + '<span style="font-size:10px;padding:2px 8px;border-radius:8px;font-family:var(--font-mono);background:var(--bg3);color:var(--text2);border:0.5px solid var(--border)">'+escHtml(status)+'</span>'
+        + (team?'<span style="font-size:10px;padding:2px 8px;border-radius:8px;font-family:var(--font-mono);background:var(--bg3);color:var(--text2);border:0.5px solid var(--border)">'+escHtml(team)+'</span>':'')
+      + '</div>'
+      + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;font-size:12px;color:var(--text3)">'
+        + '<div><b style="color:var(--text2)">Assignee</b><br>'+escHtml(assignee)+'</div>'
+        + '<div><b style="color:var(--text2)">Created</b><br>'+(bugsFmtDate(created)||'—')+'</div>'
+        + '<div><b style="color:var(--text2)">Closed</b><br>'+(bugsFmtDate(resolved)||'—')+'</div>'
+      + '</div>'
+      + '<div style="border-top:1px solid var(--border);padding-top:14px">'
+        + '<div style="font-family:var(--font-mono);font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:0.8px;margin-bottom:8px">Description</div>'
+        + '<div style="font-size:13px;line-height:1.6;color:var(--text2)">'+descHtml+'</div>'
+      + '</div>';
+  } catch(e) {
+    body.innerHTML = '<div style="padding:16px;color:var(--red)">Failed to load bug details: '+escHtml(e.message)+'</div>';
+  }
+}
+function closeBugDetail(){
+  var modal = document.getElementById('bug-detail-modal');
+  if(modal) modal.classList.remove('open');
+}
+
 function renderBugs(){
   var root=document.getElementById('bugs-root'); if(!root) return;
   if(bugsState.loading) return;
+
+  if(bugsState.loadError){
+    root.innerHTML = '<div style="padding:40px;text-align:center;color:var(--red)">Failed to load bugs: '+escHtml(bugsState.loadError)+'<br><br>'
+      + '<button class="btn btn-ghost btn-sm" onclick="bugsState.loaded=false;bugsState.loadError=null;loadBugs()">&#8635; Retry</button></div>';
+    return;
+  }
+
   var all=bugsState.bugs;
   var counts={S1:0,S2:0,S3:0,S4:0};
-  all.forEach(function(b){if(counts.hasOwnProperty(b.severity))counts[b.severity]++;});
+  all.forEach(function(b){ if(counts.hasOwnProperty(b.severity)) counts[b.severity]++; });
   var total=all.length;
-  var filtered=all.slice();
-  if(bugsState.filter!=='all') filtered=filtered.filter(function(b){return b.severity===bugsState.filter;});
-  var col=bugsState.sort.col,dir=bugsState.sort.dir;
-  filtered.sort(function(a,b){
-    var av,bv;
-    if(col==='severity'){av=SEV_ORDER[a.severity]||9;bv=SEV_ORDER[b.severity]||9;}
-    else{av=a[col]||'';bv=b[col]||'';}
-    if(av<bv)return dir==='asc'?-1:1;
-    if(av>bv)return dir==='asc'?1:-1;
-    return 0;
+  var filtered = bugsGetFilteredSorted();
+  var col=bugsState.sort.col, dir=bugsState.sort.dir;
+
+  function arrow(c){ return bugsState.sort.col!==c ? '<span style="opacity:0.3"> &#8597;</span>' : '<span> '+(bugsState.sort.dir==='asc'?'&#8593;':'&#8595;')+'</span>'; }
+
+  var html='';
+
+  // Project selector + status mode
+  html += '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:14px">';
+  html += '<select onchange="bugsSetProject(this.value)" style="font-size:12px;padding:5px 10px;border-radius:6px;border:0.5px solid var(--border2);background:var(--bg3);color:var(--text)">';
+  (bugsState.projects||[]).forEach(function(p){
+    html += '<option value="'+escHtml(p.key)+'"'+(p.key===bugsState.project?' selected':'')+'>'+escHtml(p.key)+' — '+escHtml(p.name)+'</option>';
   });
+  html += '</select>';
+  html += '<div style="display:flex;gap:4px;background:var(--bg3);border:0.5px solid var(--border2);border-radius:8px;padding:3px">';
+  [['open','Open'],['closed','Closed'],['all','All']].forEach(function(m){
+    var on = bugsState.statusMode===m[0];
+    html += '<button onclick="bugsSetStatusMode(\''+m[0]+'\')" style="font-size:11px;padding:4px 12px;border-radius:6px;border:none;cursor:pointer;background:'+(on?'var(--blue)':'transparent')+';color:'+(on?'#fff':'var(--text2)')+'">'+m[1]+'</button>';
+  });
+  html += '</div>';
+  html += '<button class="btn btn-ghost btn-sm" onclick="bugsExportCSV()" style="margin-left:auto">&#8681; Export CSV</button>';
+  html += '<button onclick="bugsState.loaded=false;loadBugs()" style="font-size:11px;padding:5px 10px;border-radius:6px;border:0.5px solid var(--border2);background:transparent;color:var(--text2);cursor:pointer">&#8635; Refresh</button>';
+  html += '</div>';
 
-  function arrow(c){return bugsState.sort.col!==c?'<span style="opacity:0.3"> &#8597;</span>':'<span> '+(bugsState.sort.dir==='asc'?'&#8593;':'&#8595;')+'</span>';}
-
-  var html='<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px">';
-  [{label:'Total bugs',val:total,color:'var(--text)'},{label:'S1 critical',val:counts.S1,color:'#f87171'},
-   {label:'S2 high',val:counts.S2,color:'#fbbf24'},{label:'S3 + S4',val:counts.S3+counts.S4,color:'#60a5fa'}
+  // Summary cards — also double as the severity filter (click a card to filter)
+  html+='<div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:14px">';
+  [{key:'all',label:'Total bugs',val:total,color:'var(--text)'},
+   {key:'S1',label:'S1 critical',val:counts.S1,color:'#f87171'},
+   {key:'S2',label:'S2 high',val:counts.S2,color:'#fbbf24'},
+   {key:'S3',label:'S3',val:counts.S3,color:'#60a5fa'},
+   {key:'S4',label:'S4',val:counts.S4,color:'#a78bfa'}
   ].forEach(function(k){
-    html+='<div style="background:var(--bg2);border:0.5px solid var(--border);border-radius:8px;padding:12px 14px">'
+    var on = bugsState.severityFilter===k.key;
+    html+='<div data-bf="'+k.key+'" onclick="bugsFilter(this.dataset.bf)" style="cursor:pointer;background:'+(on?'rgba(128,128,128,0.12)':'var(--bg2)')+';border:1.5px solid '+(on?k.color:'var(--border)')+';border-radius:8px;padding:12px 14px;transition:border-color .15s,background .15s">'
       +'<div style="font-size:10px;color:var(--text3);text-transform:uppercase;font-family:var(--font-mono)">'+k.label+'</div>'
       +'<div style="font-size:22px;font-weight:500;color:'+k.color+';margin:4px 0">'+k.val+'</div></div>';
   });
   html+='</div>';
 
+  // Team filter (severity filtering now lives on the cards above)
+  var teamOpts = bugsTeamOptions();
   html+='<div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center">';
-  html+='<span style="font-size:12px;color:var(--text3)">Filter:</span>';
-  ['all','S1','S2','S3','S4'].forEach(function(f){
-    var on=bugsState.filter===f;
-    var c=f==='all'?'rgba(148,163,184,0.7)':SEV_COLOR[f];
-    var cnt=f==='all'?total:counts[f];
-    html+='<span data-bf="'+f+'" onclick="bugsFilter(this.dataset.bf)" style="padding:4px 12px;border-radius:20px;font-size:12px;font-weight:500;font-family:var(--font-mono);cursor:pointer;border:2px solid '+c+';color:'+c+';background:'+(on?'rgba(128,128,128,0.12)':'transparent')+'">'+(f==="all"?'All':f)+' · '+cnt+'</span>';
-  });
+  if(teamOpts.length){
+    html+='<span style="font-size:12px;color:var(--text3)">Team:</span>';
+    html+='<select onchange="bugsFilterTeam(this.value)" style="font-size:12px;padding:4px 8px;border-radius:6px;border:0.5px solid var(--border2);background:var(--bg3);color:var(--text)">';
+    html+='<option value="all"'+(bugsState.teamFilter==='all'?' selected':'')+'>All Teams</option>';
+    teamOpts.forEach(function(t){
+      html+='<option value="'+escHtml(t)+'"'+(bugsState.teamFilter===t?' selected':'')+'>'+escHtml(t)+'</option>';
+    });
+    html+='</select>';
+  }
   html+='<span style="margin-left:auto;font-size:11px;color:var(--text3)">'+filtered.length+' bugs</span>';
-  html+='<button onclick="bugsState.loaded=false;loadBugs()" style="font-size:11px;padding:3px 10px;border-radius:6px;border:0.5px solid var(--border2);background:transparent;color:var(--text2);cursor:pointer">&#8635; Refresh</button>';
   html+='</div>';
 
-  var grid='80px 1fr 120px 70px 100px 110px';
+  var grid='80px 1fr 100px 90px 120px 90px 100px 100px';
   html+='<div style="background:var(--bg2);border:0.5px solid var(--border);border-radius:12px;overflow:hidden">';
   html+='<div style="display:grid;grid-template-columns:'+grid+';gap:10px;padding:9px 14px;background:var(--bg3);border-bottom:0.5px solid var(--border)">';
-  [['key','Key'],['summary','Summary'],['theme','Epic · Theme'],['severity','Severity'],['status','Status'],['assignee','Assignee']].forEach(function(c){
+  [['key','Key'],['summary','Summary'],['severity','Severity'],['status','Status'],['team','Team'],['assignee','Assignee'],['created','Created'],['resolutionDate','Closed']].forEach(function(c){
     html+='<span data-bs="'+c[0]+'" onclick="bugsSetSort(this.dataset.bs)" style="font-size:10px;color:var(--text3);font-family:var(--font-mono);text-transform:uppercase;cursor:pointer;user-select:none">'+c[1]+arrow(c[0])+'</span>';
   });
   html+='</div>';
 
   if(!filtered.length){
-    html+='<div style="padding:40px;text-align:center;color:var(--text3)">'+(bugsState.loaded?'No bugs found':'Click Refresh to load')+'</div>';
+    html+='<div style="padding:40px;text-align:center;color:var(--text3)">'+(bugsState.loaded?'No bugs found for this project/filter':'Loading…')+'</div>';
   } else {
     filtered.forEach(function(b){
       var sc=SEV_COLOR[b.severity]||'var(--text3)';
       var stBg={done:'rgba(34,197,94,0.1)',indeterminate:'rgba(59,130,246,0.1)',new:'rgba(100,116,139,0.1)'}[b.statusCat]||'rgba(100,116,139,0.1)';
       var stC={done:'#22c55e',indeterminate:'var(--blue)',new:'var(--text3)'}[b.statusCat]||'var(--text3)';
-      html+='<div style="display:grid;grid-template-columns:'+grid+';gap:10px;padding:8px 14px;border-bottom:0.5px solid rgba(255,255,255,0.04);align-items:center">'
-        +'<a href="https://riversidejira.atlassian.net/browse/'+b.key+'" target="_blank" style="font-family:var(--font-mono);font-size:11px;color:var(--blue);text-decoration:none;white-space:nowrap">'+escHtml(b.key)+'</a>'
+      html+='<div class="bug-row" data-bug-key="'+escHtml(b.key)+'" style="display:grid;grid-template-columns:'+grid+';gap:10px;padding:8px 14px;border-bottom:0.5px solid rgba(255,255,255,0.04);align-items:center;cursor:pointer">'
+        +'<span style="font-family:var(--font-mono);font-size:11px;color:var(--blue);white-space:nowrap">'+escHtml(b.key)+'</span>'
         +'<div style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)" title="'+escHtml(b.summary)+'">'+escHtml(b.summary)+'</div>'
-        +'<div style="font-size:11px;color:var(--text3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+escHtml(b.epicKey+' · '+b.theme)+'</div>'
         +'<div><span style="font-size:10px;padding:2px 7px;border-radius:8px;font-weight:600;font-family:var(--font-mono);background:'+sc+'22;color:'+sc+'">'+escHtml(b.severity)+'</span></div>'
         +'<div><span style="font-size:10px;padding:2px 7px;border-radius:6px;white-space:nowrap;background:'+stBg+';color:'+stC+'">'+escHtml(b.status)+'</span></div>'
+        +'<div style="font-size:11px;color:var(--text3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+escHtml(b.team)+'">'+escHtml(b.team||'—')+'</div>'
         +'<div style="font-size:11px;color:var(--text3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+escHtml(b.assignee)+'">'+escHtml(b.assignee)+'</div>'
+        +'<div style="font-size:11px;color:var(--text3);white-space:nowrap">'+(bugsFmtDate(b.created)||'—')+'</div>'
+        +'<div style="font-size:11px;color:var(--text3);white-space:nowrap">'+(bugsFmtDate(b.resolutionDate)||'—')+'</div>'
         +'</div>';
     });
   }
   html+='</div>';
   root.innerHTML=html;
+  root.querySelectorAll('.bug-row').forEach(function(row){
+    row.addEventListener('click', function(){ openBugDetail(row.getAttribute('data-bug-key')); });
+    row.addEventListener('mouseenter', function(){ row.style.background='rgba(255,255,255,0.03)'; });
+    row.addEventListener('mouseleave', function(){ row.style.background=''; });
+  });
 }
 
 
