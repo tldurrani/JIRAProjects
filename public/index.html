@@ -5281,13 +5281,20 @@ async function loadBugs(){
   try {
     var jql = 'project = "'+bugsState.project+'" AND issuetype = Bug ORDER BY cf[10040] ASC';
     var fields = 'summary,status,customfield_10040,customfield_10039,assignee,created,resolutiondate';
-    var all = [], startAt = 0, pageSize = 100, guard = 0;
+    var all = [], startAt = 0, pageSize = 100, guard = 0, nextPageToken = null;
     while (guard < 30) {
-      var resp = await jiraGet('/rest/api/3/search/jql?jql='+encodeURIComponent(jql)+'&fields='+fields+'&maxResults='+pageSize+'&startAt='+startAt);
-      all = all.concat(resp.issues||[]);
+      var qs = '/rest/api/3/search/jql?jql='+encodeURIComponent(jql)+'&fields='+fields+'&maxResults='+pageSize
+        + (nextPageToken ? ('&nextPageToken='+encodeURIComponent(nextPageToken)) : ('&startAt='+startAt));
+      var resp = await jiraGet(qs);
+      var pageIssues = resp.issues || [];
+      all = all.concat(pageIssues);
       guard++;
-      if (all.length >= (resp.total||0) || !(resp.issues||[]).length) break;
-      startAt += pageSize;
+      nextPageToken = resp.nextPageToken || null;
+      startAt += pageIssues.length;
+      var moreByToken = !!nextPageToken;
+      var moreByTotal = (typeof resp.total === 'number') && all.length < resp.total;
+      var moreByFullPage = !moreByToken && typeof resp.total !== 'number' && pageIssues.length === pageSize;
+      if (!pageIssues.length || (!moreByToken && !moreByTotal && !moreByFullPage)) break;
     }
     bugsState.bugs = all.map(function(i){
       return {
@@ -5466,10 +5473,16 @@ function renderBugs(){
     return;
   }
 
-  var all=bugsState.bugs;
+  // Counts reflect Team + Status filters (but not severity itself, so
+  // picking S2 doesn't zero out the S1/S3/S4 counts on the other cards).
+  var teamStatusFiltered = bugsState.bugs.filter(function(b){
+    var okTeam = bugsState.teamFilter==='all' || (b.team||'(none)')===bugsState.teamFilter;
+    var okStatus = bugsState.statusFilter===null || !!bugsState.statusFilter[b.status];
+    return okTeam && okStatus;
+  });
   var counts={S1:0,S2:0,S3:0,S4:0};
-  all.forEach(function(b){ if(counts.hasOwnProperty(b.severity)) counts[b.severity]++; });
-  var total=all.length;
+  teamStatusFiltered.forEach(function(b){ if(counts.hasOwnProperty(b.severity)) counts[b.severity]++; });
+  var total=teamStatusFiltered.length;
   var filtered = bugsGetFilteredSorted();
   var col=bugsState.sort.col, dir=bugsState.sort.dir;
 
