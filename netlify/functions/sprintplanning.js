@@ -122,12 +122,45 @@ function fmtDate(iso) {
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
-function buildSprintTableHtml(team, sprintName, rows) {
+// Pulls the current checked/unchecked state and "Approved By" text out of an
+// existing page's storage-format body, keyed by ticket key (matched via the
+// Jira link in the first cell, not row position - so this still lines up
+// correctly even if tickets were added/removed/reordered since last publish).
+function extractPreviousApprovals(oldHtml) {
+  const map = {};
+  if (!oldHtml) return map;
+  const rowRe = /<tr>([\s\S]*?)<\/tr>/g;
+  let m;
+  while ((m = rowRe.exec(oldHtml))) {
+    const rowHtml = m[1];
+    const keyMatch = rowHtml.match(/\/browse\/([A-Z][A-Z0-9]*-\d+)/);
+    if (!keyMatch) continue; // header row, or a row without a recognizable ticket link
+    const key = keyMatch[1];
+    const statusMatch = rowHtml.match(/<ac:task-status>(complete|incomplete)<\/ac:task-status>/);
+    const approved = statusMatch ? statusMatch[1] === 'complete' : false;
+    const tdMatches = rowHtml.match(/<td[^>]*>[\s\S]*?<\/td>/g) || [];
+    const lastTd = tdMatches[tdMatches.length - 1] || '';
+    const approvedBy = lastTd
+      .replace(/^<td[^>]*>/, '').replace(/<\/td>$/, '')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    map[key] = { approved, approvedBy };
+  }
+  return map;
+}
+
+function buildSprintTableHtml(team, sprintName, rows, previousApprovals) {
+  previousApprovals = previousApprovals || {};
   const generated = new Date().toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' });
   const rowsHtml = rows.map((r, idx) => {
     const taskId = idx + 1;
     const labelsText = Array.isArray(r.labels) && r.labels.length ? r.labels.map(escapeHtml).join(', ') : '\u2014';
     const flagHtml = r.flagged ? '<span style="color:#c9372c;font-weight:600">\uD83D\uDEA9 Flagged</span>' : '';
+    const prev = previousApprovals[r.key];
+    const taskStatus = prev && prev.approved ? 'complete' : 'incomplete';
+    const approvedByCell = prev && prev.approvedBy ? escapeHtml(prev.approvedBy) : '&nbsp;';
     return `<tr>
       <td><a href="${JIRA_BASE}/browse/${escapeHtml(r.key)}">${escapeHtml(r.key)}</a></td>
       <td>${escapeHtml(r.type)}</td>
@@ -139,8 +172,8 @@ function buildSprintTableHtml(team, sprintName, rows) {
       <td>${escapeHtml(r.release || '\u2014')}</td>
       <td>${flagHtml}</td>
       <td>${escapeHtml(r.summary || '')}</td>
-      <td><ac:task-list><ac:task><ac:task-id>${taskId}</ac:task-id><ac:task-status>incomplete</ac:task-status><ac:task-body>Approved</ac:task-body></ac:task></ac:task-list></td>
-      <td>&nbsp;</td>
+      <td><ac:task-list><ac:task><ac:task-id>${taskId}</ac:task-id><ac:task-status>${taskStatus}</ac:task-status><ac:task-body>Approved</ac:task-body></ac:task></ac:task-list></td>
+      <td>${approvedByCell}</td>
     </tr>`;
   }).join('\n');
 
@@ -178,13 +211,25 @@ ${releaseNote}
 async function publishSprintPage({ team, sprintName, rows }) {
   const section = await findOrCreateSection(team);
   const pageTitle = `${sprintName} \u2014 ${team} \u2014 Sprint Approval`;
-  const html = buildSprintTableHtml(team, sprintName, rows);
 
-  const existing = await findPageByTitleInSpace(pageTitle);
+  let existing = await findPageByTitleInSpace(pageTitle);
+  let previousApprovals = {};
+  if (existing) {
+    const full = await confluenceFetch(`/rest/api/content/${existing.id}?expand=body.storage,version`);
+    previousApprovals = extractPreviousApprovals(full.body && full.body.storage && full.body.storage.value);
+    existing = full; // carry the version forward so createOrUpdatePage doesn't need to re-fetch it
+  }
+
+  const html = buildSprintTableHtml(team, sprintName, rows, previousApprovals);
   const { result, wasUpdate } = await createOrUpdatePage(section.id, pageTitle, html, existing);
 
+  const preservedCount = rows.filter(r => {
+    const p = previousApprovals[r.key];
+    return p && (p.approved || p.approvedBy);
+  }).length;
+
   const url = `${CONFLUENCE_BASE}/spaces/${SPACE_KEY}/pages/${result.id}`;
-  return { url, pageId: result.id, sectionTitle: section.title, sectionCreated: section.created, updated: wasUpdate };
+  return { url, pageId: result.id, sectionTitle: section.title, sectionCreated: section.created, updated: wasUpdate, preservedApprovals: preservedCount };
 }
 
 exports.handler = async (event) => {

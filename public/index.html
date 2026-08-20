@@ -6626,7 +6626,7 @@ async function spGenerateSummaries(){
   renderSprintPlanning();
   var results = await Promise.all(need.map(function(t){
     var desc = spStripHtml(t.descHtml).slice(0,600);
-    var prompt = 'Ticket '+t.key+' ('+t.type+'): '+t.summary+(desc?('\n\nDetails: '+desc):'')+'\n\nWrite ONE concise sentence (max 20 words) describing what this ticket does or solves, for a manager reviewing sprint approval. No preamble, do not repeat the ticket key.';
+    var prompt = 'Ticket '+t.key+' ('+t.type+'): '+t.summary+(desc?('\n\nDetails: '+desc):'')+'\n\nWrite ONE concise sentence (max 20 words) describing what this ticket does or solves, for a manager reviewing sprint approval. No preamble, do not repeat the ticket key. Plain text only — no markdown, no asterisks, no bold or italic formatting, since this goes directly into a table cell that does not render markdown.';
     return fetch('/api/summarize', {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({ title:'Sprint Ticket Summary '+t.key, description: prompt }),
@@ -6635,7 +6635,11 @@ async function spGenerateSummaries(){
       return res.json();
     }).then(function(data){
       if(data.error) throw new Error(data.error);
-      return { key:t.key, text:(data.summary||'').trim() };
+      // Defensive: strip any markdown bold/italic markers that slip through
+      // regardless of the prompt, since this text renders as plain text both
+      // in-app and in the Confluence table cell.
+      var text = (data.summary||'').trim().replace(/\*\*(.*?)\*\*/g,'$1').replace(/(^|\s)\*(\S.*?\S|\S)\*(?=\s|$)/g,'$1$2');
+      return { key:t.key, text:text };
     }).catch(function(e){
       return { key:t.key, text:'(summary failed: '+e.message+')' };
     });
@@ -6795,8 +6799,10 @@ function renderSprintPlanning(){
     html += '<div style="padding:12px 14px;background:rgba(239,68,68,0.1);border:0.5px solid rgba(239,68,68,0.3);border-radius:8px;color:#f87171;font-size:12px;margin-bottom:14px">'+escHtml(spState.publishError)+'</div>';
   }
   if(spState.publishResult){
+    var preserved = spState.publishResult.preservedApprovals || 0;
     html += '<div style="padding:12px 14px;background:rgba(34,197,94,0.1);border:0.5px solid rgba(34,197,94,0.3);border-radius:8px;color:#4ade80;font-size:12px;margin-bottom:14px">'
       + (spState.publishResult.updated ? 'Updated existing approval page' : 'Created new approval page')
+      + (spState.publishResult.updated && preserved>0 ? ' — preserved '+preserved+' existing approval'+(preserved===1?'':'s') : '')
       + (spState.publishResult.sectionCreated ? ' (also created the "'+escHtml(spState.publishResult.sectionTitle)+'" section)' : '')
       + ' — <a href="'+escHtml(spState.publishResult.url)+'" target="_blank" style="color:#4ade80;text-decoration:underline">Open in Confluence</a></div>';
   }
