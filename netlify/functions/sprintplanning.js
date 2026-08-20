@@ -256,27 +256,25 @@ function buildSprintTableHtml(rows, previousApprovals) {
     ? `<p><strong>Included:</strong> ${pairs.map(p => `${escapeHtml(p.team)} \u2014 ${escapeHtml(p.sprintName)}`).join(' &nbsp;|&nbsp; ')}</p>`
     : '';
 
+  const th = (label) => `<th style="white-space:nowrap">${label}</th>`;
   const headerCols = isCombined
-    ? '<th>Ticket</th><th>Name</th><th>Team</th><th>Sprint</th><th>Epic</th><th>Type</th><th>Severity</th><th>Labels</th><th>Assignee</th><th>Reporter</th><th>Created</th><th>Release</th><th>Flag</th><th>Summary</th><th>Approved</th><th>Approved By</th>'
-    : '<th>Ticket</th><th>Name</th><th>Epic</th><th>Type</th><th>Severity</th><th>Labels</th><th>Assignee</th><th>Reporter</th><th>Created</th><th>Release</th><th>Flag</th><th>Summary</th><th>Approved</th><th>Approved By</th>';
+    ? [th('Ticket'), th('Name'), th('Team'), th('Sprint'), th('Epic'), th('Type'), th('Severity'), th('Labels'), th('Assignee'), th('Reporter'), th('Created'), th('Release'), th('Flag'), th('Summary'), th('Approved'), th('Approved By')].join('')
+    : [th('Ticket'), th('Name'), th('Epic'), th('Type'), th('Severity'), th('Labels'), th('Assignee'), th('Reporter'), th('Created'), th('Release'), th('Flag'), th('Summary'), th('Approved'), th('Approved By')].join('');
 
-  // Column widths, in px - Name/Epic/Summary/Approved By get the most room
-  // since they hold prose/free text; everything else is a short fixed value
-  // so it doesn't need to wrap at all. data-layout="full-width" is the same
-  // attribute Confluence's editor sets when you choose the "Full width"
-  // table option, so this renders across the whole page instead of
-  // Confluence's default constrained/centered width.
-  const colWidths = isCombined
-    ? [90, 200, 100, 130, 190, 70, 80, 130, 110, 110, 100, 120, 70, 260, 90, 140]
-    : [90, 220, 190, 70, 80, 140, 120, 120, 100, 130, 70, 280, 90, 150];
-  const colgroup = `<colgroup>${colWidths.map(w => `<col style="width: ${w}.0px;" />`).join('')}</colgroup>`;
-
+  // No fixed column widths here on purpose: two rounds of hand-tuned pixel
+  // widths both still got proportionally squeezed by Confluence down to the
+  // point where short headers like "Severity"/"Approved" wrapped onto two
+  // lines - meaning the actual rendering container is narrower than assumed
+  // and guessing a third number blind isn't reliable. Letting the table use
+  // natural content-based sizing (no colgroup, no data-layout) means the
+  // browser sizes each column to fit its own content first, and any
+  // necessary squeezing lands on the free-text columns (Name/Epic/Summary),
+  // which can wrap without looking broken - not on short single-word ones.
   return `<h1>${escapeHtml(title)}</h1>
 <p>Generated ${generated} from the Sprint Planning tab. Review each ticket below, check the box once approved, and add your name in the "Approved By" column.</p>
 ${includedNote}
 ${releaseNote}
-<table data-layout="full-width">
-  ${colgroup}
+<table>
   <tbody>
     <tr>
       ${headerCols}
