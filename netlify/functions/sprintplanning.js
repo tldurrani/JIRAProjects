@@ -49,9 +49,16 @@ function sectionTitleForTeam(team) {
   return `Sprint Planning ${team || 'Unassigned'}`;
 }
 
-async function findChildPageByTitle(parentId, title) {
-  const cql = `ancestor=${parentId} and title="${title.replace(/"/g, '\\"')}"`;
-  const data = await confluenceFetch(`/rest/api/content/search?cql=${encodeURIComponent(cql)}&limit=1`);
+// Confluence enforces page titles to be unique across an entire SPACE, not
+// just among siblings under the same parent. Looking this up scoped to a
+// parent (ancestor=X in CQL) could miss a page that already exists
+// elsewhere in the space, and CQL search can also lag slightly behind a
+// very recent create. This queries content directly by space+title, which
+// is what actually determines whether a create will collide.
+async function findPageByTitleInSpace(title) {
+  const data = await confluenceFetch(
+    `/rest/api/content?spaceKey=${encodeURIComponent(SPACE_KEY)}&title=${encodeURIComponent(title)}&type=page&expand=version`
+  );
   return (data.results && data.results[0]) || null;
 }
 
@@ -76,16 +83,36 @@ async function updatePage(pageId, currentVersion, title, htmlBody) {
   });
 }
 
+// Creates the page, but if Confluence rejects it because a page with that
+// title already exists (a race, or our lookup missing it for any reason),
+// self-heal by looking it up again and updating instead of failing.
+async function createOrUpdatePage(parentId, title, htmlBody, knownExisting) {
+  let existing = knownExisting;
+  if (!existing) {
+    try {
+      return { result: await createPage(parentId, title, htmlBody), wasUpdate: false };
+    } catch (e) {
+      if (!/already exists/i.test(e.message)) throw e;
+      existing = await findPageByTitleInSpace(title);
+      if (!existing) throw e; // genuinely something else went wrong
+    }
+  }
+  const full = existing.version ? existing : await confluenceFetch(`/rest/api/content/${existing.id}?expand=version`);
+  const result = await updatePage(existing.id, full.version.number, title, htmlBody);
+  return { result, wasUpdate: true };
+}
+
 async function findOrCreateSection(team) {
   const title = sectionTitleForTeam(team);
-  const existing = await findChildPageByTitle(FOLDER_ID, title);
+  const existing = await findPageByTitleInSpace(title);
   if (existing) return { id: existing.id, title, created: false };
-  const created = await createPage(
+  const { result } = await createOrUpdatePage(
     FOLDER_ID,
     title,
-    `<p>Sprint approval pages for the ${escapeHtml(team)} team live here. Each sprint gets its own page, created automatically from the Sprint Planning tab.</p>`
+    `<p>Sprint approval pages for the ${escapeHtml(team)} team live here. Each sprint gets its own page, created automatically from the Sprint Planning tab.</p>`,
+    null
   );
-  return { id: created.id, title, created: true };
+  return { id: result.id, title, created: true };
 }
 
 function fmtDate(iso) {
@@ -143,16 +170,9 @@ async function publishSprintPage({ team, sprintName, rows }) {
   const pageTitle = `${sprintName} \u2014 ${team} \u2014 Sprint Approval`;
   const html = buildSprintTableHtml(team, sprintName, rows);
 
-  const existing = await findChildPageByTitle(section.id, pageTitle);
-  let result;
-  let wasUpdate = false;
-  if (existing) {
-    const full = await confluenceFetch(`/rest/api/content/${existing.id}?expand=version`);
-    result = await updatePage(existing.id, full.version.number, pageTitle, html);
-    wasUpdate = true;
-  } else {
-    result = await createPage(section.id, pageTitle, html);
-  }
+  const existing = await findPageByTitleInSpace(pageTitle);
+  const { result, wasUpdate } = await createOrUpdatePage(section.id, pageTitle, html, existing);
+
   const url = `${CONFLUENCE_BASE}/spaces/${SPACE_KEY}/pages/${result.id}`;
   return { url, pageId: result.id, sectionTitle: section.title, sectionCreated: section.created, updated: wasUpdate };
 }
