@@ -6483,7 +6483,7 @@ async function spLoadSprintTickets(){
     var clauses = ['sprint = '+spState.sprintFilter];
     if(spState.teamFilter!=='all') clauses.push('cf[10039] = "'+spState.teamFilter.replace(/"/g,'\\"')+'"');
     var jql = clauses.join(' AND ') + ' ORDER BY created DESC';
-    var fieldList = ['summary','description','issuetype','status','customfield_10040','customfield_10039','labels','assignee','reporter','created',spState.sprintFieldId];
+    var fieldList = ['summary','description','issuetype','status','customfield_10040','customfield_10039','labels','assignee','reporter','created','fixVersions',spState.sprintFieldId];
     if(spState.flaggedFieldId) fieldList.push(spState.flaggedFieldId);
     var fields = fieldList.join(',');
     var all=[], startAt=0, pageSize=100, guard=0, nextPageToken=null;
@@ -6507,6 +6507,7 @@ async function spLoadSprintTickets(){
       var flaggedRaw = spState.flaggedFieldId ? f[spState.flaggedFieldId] : null;
       var flagged = Array.isArray(flaggedRaw) ? flaggedRaw.length>0 : !!flaggedRaw;
       var descHtml = (i.renderedFields && i.renderedFields.description) || '';
+      var releases = (f.fixVersions||[]).map(function(v){ return { name:v.name, releaseDate:v.releaseDate||null, released:!!v.released }; });
       return {
         key: i.key,
         project: i.key.split('-')[0],
@@ -6521,6 +6522,7 @@ async function spLoadSprintTickets(){
         created: f.created||'',
         flagged: flagged,
         sprints: sprints,
+        releases: releases,
         summary: (f.summary||'').trim(),
         descHtml: descHtml,
       };
@@ -6570,6 +6572,11 @@ function spGetFilteredTickets(){
     if(col==='created'){ av = a.created ? new Date(a.created).getTime() : 0; bv = b.created ? new Date(b.created).getTime() : 0; }
     else if(col==='flagged'){ av = a.flagged?1:0; bv = b.flagged?1:0; }
     else if(col==='labels'){ av = (a.labels||[]).join(', ').toLowerCase(); bv = (b.labels||[]).join(', ').toLowerCase(); }
+    else if(col==='release'){
+      var ra=spPrimaryRelease(a.releases), rb=spPrimaryRelease(b.releases);
+      av = ra ? (ra.releaseDate ? new Date(ra.releaseDate).getTime() : 0) : -1;
+      bv = rb ? (rb.releaseDate ? new Date(rb.releaseDate).getTime() : 0) : -1;
+    }
     else { av = (a[col]||'').toString().toLowerCase(); bv = (b[col]||'').toString().toLowerCase(); }
     if(av<bv) return dir==='asc'?-1:1;
     if(av>bv) return dir==='asc'?1:-1;
@@ -6588,12 +6595,12 @@ function spExportCSV(){
   if(!rows.length) return;
   var sprintOpt = spSprintOptions().find(function(s){ return s.id===spState.sprintFilter; });
   var sprintName = sprintOpt ? sprintOpt.name : ('Sprint'+spState.sprintFilter);
-  var header = ['Key','Project','Type','Severity','Labels','Assignee','Reporter','Created','Flag','Summary'];
+  var header = ['Key','Project','Type','Severity','Labels','Assignee','Reporter','Created','Release','Flag','Summary'];
   var csvRows = [header].concat(rows.map(function(t){
     return [
       t.key, t.project, t.type, t.severity||'',
       (t.labels||[]).join(', '), t.assignee, t.reporter,
-      spFmtDate(t.created), t.flagged?'Flagged':'',
+      spFmtDate(t.created), spFmtRelease(t.releases), t.flagged?'Flagged':'',
       spState.summaries[t.key] || t.summary,
     ];
   }));
@@ -6659,6 +6666,7 @@ async function spPublish(){
       return {
         key:t.key, type:t.type, severity:t.severity, labels:t.labels,
         assignee:t.assignee, reporter:t.reporter, created:t.created,
+        release: spFmtRelease(t.releases),
         flagged:t.flagged, summary: spState.summaries[t.key] || t.summary,
       };
     });
@@ -6682,6 +6690,26 @@ function spFmtDate(iso){
   var d=new Date(iso);
   if(isNaN(d.getTime())) return '';
   return d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
+}
+
+// A ticket can have multiple fix versions; prefer the earliest one that
+// hasn't shipped yet (the "potential release date" that actually matters
+// for planning), falling back to whatever's set if all are already released.
+function spPrimaryRelease(releases){
+  if(!releases || !releases.length) return null;
+  var unreleased = releases.filter(function(r){ return !r.released; });
+  var pool = unreleased.length ? unreleased : releases;
+  var withDates = pool.filter(function(r){ return r.releaseDate; });
+  if(withDates.length){
+    withDates.sort(function(a,b){ return new Date(a.releaseDate) - new Date(b.releaseDate); });
+    return withDates[0];
+  }
+  return pool[0];
+}
+function spFmtRelease(releases){
+  var r = spPrimaryRelease(releases);
+  if(!r) return '';
+  return r.name + (r.releaseDate ? ' ('+spFmtDate(r.releaseDate)+')' : '');
 }
 
 function renderSprintPlanning(){
@@ -6773,10 +6801,10 @@ function renderSprintPlanning(){
       + ' — <a href="'+escHtml(spState.publishResult.url)+'" target="_blank" style="color:#4ade80;text-decoration:underline">Open in Confluence</a></div>';
   }
 
-  var grid='80px 70px 90px 70px 1fr 120px 120px 90px 70px 2fr';
+  var grid='80px 70px 90px 70px 1fr 120px 120px 90px 130px 70px 2fr';
   html += '<div style="background:var(--bg2);border:0.5px solid var(--border);border-radius:12px;overflow:hidden">';
   html += '<div style="display:grid;grid-template-columns:'+grid+';gap:10px;padding:9px 14px;background:var(--bg3);border-bottom:0.5px solid var(--border)">';
-  [['key','Key'],['project','Project'],['type','Type'],['severity','Severity'],['labels','Labels'],['assignee','Assignee'],['reporter','Reporter'],['created','Created'],['flagged','Flag'],[null,'Summary']].forEach(function(c){
+  [['key','Key'],['project','Project'],['type','Type'],['severity','Severity'],['labels','Labels'],['assignee','Assignee'],['reporter','Reporter'],['created','Created'],['release','Release'],['flagged','Flag'],[null,'Summary']].forEach(function(c){
     var arrow = c[0]===null ? '' : (spState.sort.col!==c[0] ? '<span style="opacity:0.3"> &#8597;</span>' : '<span> '+(spState.sort.dir==='asc'?'&#8593;':'&#8595;')+'</span>');
     var cursor = c[0]===null ? '' : 'cursor:pointer;user-select:none;';
     var onclick = c[0]===null ? '' : ' onclick="spSetSort(\''+c[0]+'\')"';
@@ -6792,6 +6820,7 @@ function renderSprintPlanning(){
       var sevColor = {S1:'#f87171',S2:'#fbbf24',S3:'#60a5fa',S4:'#a78bfa'}[t.severity] || null;
       var labelsHtml = (t.labels&&t.labels.length) ? t.labels.map(function(l){ return '<span class="rn-label">'+escHtml(l)+'</span>'; }).join('') : '<span style="color:var(--text3);font-size:11px">—</span>';
       var summaryText = spState.summaries[t.key] || '<span style="color:var(--text3)">Not generated yet</span>';
+      var releaseText = spFmtRelease(t.releases);
       html += '<div style="display:grid;grid-template-columns:'+grid+';gap:10px;padding:8px 14px;border-bottom:0.5px solid rgba(255,255,255,0.04);align-items:center">'
         + '<a href="https://riversidejira.atlassian.net/browse/'+escHtml(t.key)+'" target="_blank" style="font-family:var(--font-mono);font-size:11px;color:var(--blue);text-decoration:none">'+escHtml(t.key)+'</a>'
         + '<span style="font-size:11px;color:var(--text3);font-family:var(--font-mono)">'+escHtml(t.project)+'</span>'
@@ -6801,6 +6830,7 @@ function renderSprintPlanning(){
         + '<span style="font-size:11px;color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+escHtml(t.assignee)+'">'+escHtml(t.assignee)+'</span>'
         + '<span style="font-size:11px;color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+escHtml(t.reporter)+'">'+escHtml(t.reporter)+'</span>'
         + '<span style="font-size:11px;color:var(--text3);white-space:nowrap">'+(spFmtDate(t.created)||'—')+'</span>'
+        + '<span style="font-size:11px;color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+escHtml(releaseText)+'">'+(escHtml(releaseText)||'<span style="color:var(--text3)">—</span>')+'</span>'
         + '<span>'+(t.flagged?'<span style="color:#f87171;font-size:11px;font-weight:600">&#128681; Flag</span>':'<span style="color:var(--text3);font-size:11px">—</span>')+'</span>'
         + '<span style="font-size:12px;color:var(--text2)">'+summaryText+'</span>'
         + '</div>';
