@@ -6273,16 +6273,20 @@ function rnSaveHistory(entry) {
 // or depend on any other tab's state.
 // ═══════════════════════════════════════════════════════════════════════════
 var spState = {
-  project: null,
-  availableProjects: [],
-  projectsLoaded: false,
   sprintFieldId: null,
   flaggedFieldId: null,
   fieldsResolved: false,
   fieldsError: null,
+
+  discoveryLoaded: false,
+  discoveryLoading: false,
+  discoveryError: null,
+  discoveryTickets: [],   // lightweight - just team + sprint refs, used only to populate dropdowns
+
   teamFilter: 'all',
   sprintFilter: null,     // selected sprint id, or null = none picked yet
-  tickets: [],
+
+  tickets: [],            // full detail - only ever holds the currently selected sprint's tickets
   loading: false,
   loaded: false,
   loadError: null,
@@ -6292,11 +6296,10 @@ var spState = {
   publishResult: null,
   publishError: null,
 };
-var SP_DEFAULT_PROJECT = 'DM';
 var SP_TYPE_STYLE = { 'Bug':'rn-itype-bug', 'Story':'rn-itype-story', 'Task':'rn-itype-task', 'Spike':'rn-itype-spike', 'Sub-task':'rn-itype-subtask', 'Subtask':'rn-itype-subtask' };
 
 function spOnTabOpen(){
-  if(!spState.loaded && !spState.loading) spLoadAll();
+  if(!spState.discoveryLoaded && !spState.discoveryLoading) spLoadDiscovery();
   else renderSprintPlanning();
 }
 
@@ -6319,20 +6322,6 @@ async function spResolveFields(){
     spState.fieldsError = e.message;
   }
   spState.fieldsResolved = true;
-}
-
-async function spLoadProjects(){
-  if(spState.projectsLoaded) return;
-  try {
-    var resp = await jiraGet('/rest/api/3/project?maxResults=200');
-    var list = Array.isArray(resp) ? resp : (resp.values||[]);
-    spState.availableProjects = list.map(function(p){ return {key:p.key, name:p.name}; }).sort(function(a,b){ return a.key<b.key?-1:(a.key>b.key?1:0); });
-  } catch(e) { console.error('spLoadProjects:', e); spState.availableProjects = []; }
-  spState.projectsLoaded = true;
-  if(!spState.project){
-    var hasDefault = spState.availableProjects.some(function(p){ return p.key===SP_DEFAULT_PROJECT; });
-    spState.project = hasDefault ? SP_DEFAULT_PROJECT : (spState.availableProjects[0] && spState.availableProjects[0].key) || null;
-  }
 }
 
 // Handles both shapes Jira's Sprint field can come back as: a clean object
@@ -6363,25 +6352,71 @@ function spPrimarySprint(sprints){
   return active || sprints[sprints.length-1];
 }
 
-async function spLoadAll(){
-  if(spState.loading) return;
-  spState.loading = true;
-  spState.loadError = null;
+// Lightweight pass: only pulls the Team + Sprint fields (nothing else - no
+// summary, description, labels, assignee, etc) just to know which teams and
+// sprints actually exist, so the dropdowns can populate without doing the
+// expensive full pull. Capped at a few pages since this is only for
+// discovery, not the real data set.
+async function spLoadDiscovery(){
+  if(spState.discoveryLoading) return;
+  spState.discoveryLoading = true;
+  spState.discoveryError = null;
   var root = document.getElementById('sp-root');
-  if(root) root.innerHTML = '<div style="padding:40px;text-align:center;color:var(--text3)">&#8635; Loading sprint data from Jira…</div>';
+  if(root) root.innerHTML = '<div style="padding:40px;text-align:center;color:var(--text3)">&#8635; Finding teams and sprints…</div>';
 
   await spResolveFields();
-  await spLoadProjects();
-
   if(spState.fieldsError || !spState.sprintFieldId){
-    spState.tickets=[]; spState.loaded=true; spState.loading=false; renderSprintPlanning(); return;
-  }
-  if(!spState.project){
-    spState.tickets=[]; spState.loaded=true; spState.loading=false; renderSprintPlanning(); return;
+    spState.discoveryLoaded = true; spState.discoveryLoading = false; renderSprintPlanning(); return;
   }
 
   try {
-    var jql = 'project = "'+spState.project+'" AND sprint is not EMPTY ORDER BY created DESC';
+    var jql = 'sprint is not EMPTY ORDER BY created DESC';
+    var fields = 'customfield_10039,'+spState.sprintFieldId;
+    var all=[], startAt=0, pageSize=100, guard=0, nextPageToken=null;
+    while(guard<5){ // discovery only - light cap, not the full data pull
+      var qs = '/rest/api/3/search/jql?jql='+encodeURIComponent(jql)+'&fields='+fields+'&maxResults='+pageSize
+        + (nextPageToken ? ('&nextPageToken='+encodeURIComponent(nextPageToken)) : ('&startAt='+startAt));
+      var resp = await jiraGet(qs);
+      var pageIssues = resp.issues||[];
+      all = all.concat(pageIssues);
+      guard++;
+      nextPageToken = resp.nextPageToken || null;
+      startAt += pageIssues.length;
+      var moreByToken=!!nextPageToken;
+      var moreByTotal=(typeof resp.total==='number')&&all.length<resp.total;
+      var moreByFullPage=!moreByToken&&typeof resp.total!=='number'&&pageIssues.length===pageSize;
+      if(!pageIssues.length||(!moreByToken&&!moreByTotal&&!moreByFullPage)) break;
+    }
+    spState.discoveryTickets = all.map(function(i){
+      var f=i.fields||{};
+      return {
+        team: (f.customfield_10039&&f.customfield_10039.value)||'',
+        sprints: spParseSprintField(f[spState.sprintFieldId]),
+      };
+    });
+  } catch(e) {
+    console.error('spLoadDiscovery:', e);
+    spState.discoveryError = e.message;
+  }
+  spState.discoveryLoaded = true;
+  spState.discoveryLoading = false;
+  renderSprintPlanning();
+}
+
+// The real, full-detail pull — only ever fires once a specific sprint is
+// picked, and the JQL itself is scoped tightly to that sprint (+ team, if
+// one is selected), so it only ever fetches what's actually going to be
+// shown/published, not a broad pool filtered client-side.
+async function spLoadSprintTickets(){
+  if(spState.loading) return;
+  spState.loading = true;
+  spState.loadError = null;
+  renderSprintPlanning();
+
+  try {
+    var clauses = ['sprint = '+spState.sprintFilter];
+    if(spState.teamFilter!=='all') clauses.push('cf[10039] = "'+spState.teamFilter.replace(/"/g,'\\"')+'"');
+    var jql = clauses.join(' AND ') + ' ORDER BY created DESC';
     var fieldList = ['summary','description','issuetype','status','customfield_10040','customfield_10039','labels','assignee','reporter','created',spState.sprintFieldId];
     if(spState.flaggedFieldId) fieldList.push(spState.flaggedFieldId);
     var fields = fieldList.join(',');
@@ -6408,6 +6443,7 @@ async function spLoadAll(){
       var descHtml = (i.renderedFields && i.renderedFields.description) || '';
       return {
         key: i.key,
+        project: i.key.split('-')[0],
         type: (f.issuetype&&f.issuetype.name)||'',
         status: (f.status&&f.status.name)||'',
         statusCat: (f.status&&f.status.statusCategory&&f.status.statusCategory.key)||'new',
@@ -6425,7 +6461,7 @@ async function spLoadAll(){
     });
     spState.loaded = true;
   } catch(e) {
-    console.error('spLoadAll:', e);
+    console.error('spLoadSprintTickets:', e);
     spState.loadError = e.message;
     spState.tickets = [];
     spState.loaded = true;
@@ -6434,36 +6470,30 @@ async function spLoadAll(){
   renderSprintPlanning();
 }
 
-function spSetProject(key){
-  if(spState.project===key) return;
-  spState.project = key;
-  spState.loaded = false;
-  spState.teamFilter = 'all';
-  spState.sprintFilter = null;
-  spState.summaries = {};
-  spState.publishResult = null; spState.publishError = null;
-  spLoadAll();
-}
 function spFilterTeam(t){
   spState.teamFilter = t;
   spState.sprintFilter = null;
+  spState.tickets = [];
+  spState.summaries = {};
   spState.publishResult = null; spState.publishError = null;
   renderSprintPlanning();
 }
 function spSetSprint(sprintId){
   spState.sprintFilter = sprintId ? parseInt(sprintId,10) : null;
+  spState.summaries = {};
   spState.publishResult = null; spState.publishError = null;
-  renderSprintPlanning();
+  if(spState.sprintFilter==null){ spState.tickets=[]; renderSprintPlanning(); return; }
+  spLoadSprintTickets();
 }
 
 function spTeamOptions(){
   var seen={};
-  spState.tickets.forEach(function(t){ if(t.team) seen[t.team]=true; });
+  spState.discoveryTickets.forEach(function(t){ if(t.team) seen[t.team]=true; });
   return Object.keys(seen).sort();
 }
 function spSprintOptions(){
   var byId={};
-  spState.tickets.forEach(function(t){
+  spState.discoveryTickets.forEach(function(t){
     if(spState.teamFilter!=='all' && t.team!==spState.teamFilter) return;
     var sp = spPrimarySprint(t.sprints);
     if(sp && sp.id!=null && !byId[sp.id]) byId[sp.id]=sp;
@@ -6477,13 +6507,10 @@ function spSprintOptions(){
   });
   return list;
 }
+// The detailed query is already scoped tightly by JQL (sprint + team), so
+// spState.tickets IS the filtered set - no further client-side filtering.
 function spGetFilteredTickets(){
-  if(spState.sprintFilter==null) return [];
-  return spState.tickets.filter(function(t){
-    if(spState.teamFilter!=='all' && t.team!==spState.teamFilter) return false;
-    var sp = spPrimarySprint(t.sprints);
-    return sp && sp.id===spState.sprintFilter;
-  });
+  return spState.tickets;
 }
 
 function spStripHtml(html){
@@ -6565,29 +6592,24 @@ function spFmtDate(iso){
 
 function renderSprintPlanning(){
   var root=document.getElementById('sp-root'); if(!root) return;
-  if(spState.loading) return;
+  if(spState.discoveryLoading) return;
 
-  if(spState.loadError){
-    root.innerHTML = '<div style="padding:40px;text-align:center;color:var(--red)">Failed to load sprint data: '+escHtml(spState.loadError)+'<br><br>'
-      + '<button class="btn btn-ghost btn-sm" onclick="spState.loaded=false;spState.loadError=null;spLoadAll()">&#8635; Retry</button></div>';
+  if(spState.discoveryError){
+    root.innerHTML = '<div style="padding:40px;text-align:center;color:var(--red)">Failed to load teams/sprints: '+escHtml(spState.discoveryError)+'<br><br>'
+      + '<button class="btn btn-ghost btn-sm" onclick="spState.discoveryLoaded=false;spState.discoveryError=null;spLoadDiscovery()">&#8635; Retry</button></div>';
     return;
   }
   if(spState.fieldsError){
     root.innerHTML = '<div style="padding:40px;text-align:center;color:var(--red)">'+escHtml(spState.fieldsError)+'<br><br>'
-      + '<button class="btn btn-ghost btn-sm" onclick="spState.fieldsResolved=false;spState.loaded=false;spLoadAll()">&#8635; Retry</button></div>';
+      + '<button class="btn btn-ghost btn-sm" onclick="spState.fieldsResolved=false;spState.discoveryLoaded=false;spLoadDiscovery()">&#8635; Retry</button></div>';
     return;
   }
 
   var html='';
 
-  // Project selector
   html += '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:14px">';
-  html += '<select onchange="spSetProject(this.value)" style="font-size:12px;padding:5px 10px;border-radius:6px;border:0.5px solid var(--border2);background:var(--bg3);color:var(--text)">';
-  (spState.availableProjects||[]).forEach(function(p){
-    html += '<option value="'+escHtml(p.key)+'"'+(p.key===spState.project?' selected':'')+'>'+escHtml(p.key)+' — '+escHtml(p.name)+'</option>';
-  });
-  html += '</select>';
-  html += '<button onclick="spState.loaded=false;spLoadAll()" style="font-size:11px;padding:5px 10px;border-radius:6px;border:0.5px solid var(--border2);background:transparent;color:var(--text2);cursor:pointer">&#8635; Refresh</button>';
+  html += '<span style="font-size:12px;color:var(--text3)">Sprint Planning is project-agnostic — pick a team and sprint to load just that sprint\'s tickets.</span>';
+  html += '<button onclick="spState.discoveryLoaded=false;spLoadDiscovery()" style="margin-left:auto;font-size:11px;padding:5px 10px;border-radius:6px;border:0.5px solid var(--border2);background:transparent;color:var(--text2);cursor:pointer">&#8635; Refresh teams/sprints</button>';
   html += '</div>';
 
   // Team + Sprint selectors
@@ -6611,7 +6633,19 @@ function renderSprintPlanning(){
   html += '</div>';
 
   if(spState.sprintFilter==null){
-    html += '<div style="padding:40px;text-align:center;color:var(--text3)">Pick a team and sprint above to view its tickets.</div>';
+    html += '<div style="padding:40px;text-align:center;color:var(--text3)">Pick a team and sprint above to load its tickets.</div>';
+    root.innerHTML = html;
+    return;
+  }
+
+  if(spState.loading){
+    html += '<div style="padding:40px;text-align:center;color:var(--text3)">&#8635; Loading tickets for this sprint…</div>';
+    root.innerHTML = html;
+    return;
+  }
+  if(spState.loadError){
+    html += '<div style="padding:40px;text-align:center;color:var(--red)">Failed to load tickets: '+escHtml(spState.loadError)+'<br><br>'
+      + '<button class="btn btn-ghost btn-sm" onclick="spLoadSprintTickets()">&#8635; Retry</button></div>';
     root.innerHTML = html;
     return;
   }
@@ -6637,10 +6671,10 @@ function renderSprintPlanning(){
       + ' — <a href="'+escHtml(spState.publishResult.url)+'" target="_blank" style="color:#4ade80;text-decoration:underline">Open in Confluence</a></div>';
   }
 
-  var grid='80px 90px 70px 1fr 120px 120px 90px 70px 2fr';
+  var grid='80px 70px 90px 70px 1fr 120px 120px 90px 70px 2fr';
   html += '<div style="background:var(--bg2);border:0.5px solid var(--border);border-radius:12px;overflow:hidden">';
   html += '<div style="display:grid;grid-template-columns:'+grid+';gap:10px;padding:9px 14px;background:var(--bg3);border-bottom:0.5px solid var(--border)">';
-  ['Key','Type','Severity','Labels','Assignee','Reporter','Created','Flag','Summary'].forEach(function(c){
+  ['Key','Project','Type','Severity','Labels','Assignee','Reporter','Created','Flag','Summary'].forEach(function(c){
     html += '<span style="font-size:10px;color:var(--text3);font-family:var(--font-mono);text-transform:uppercase">'+c+'</span>';
   });
   html += '</div>';
@@ -6655,6 +6689,7 @@ function renderSprintPlanning(){
       var summaryText = spState.summaries[t.key] || '<span style="color:var(--text3)">Not generated yet</span>';
       html += '<div style="display:grid;grid-template-columns:'+grid+';gap:10px;padding:8px 14px;border-bottom:0.5px solid rgba(255,255,255,0.04);align-items:center">'
         + '<a href="https://riversidejira.atlassian.net/browse/'+escHtml(t.key)+'" target="_blank" style="font-family:var(--font-mono);font-size:11px;color:var(--blue);text-decoration:none">'+escHtml(t.key)+'</a>'
+        + '<span style="font-size:11px;color:var(--text3);font-family:var(--font-mono)">'+escHtml(t.project)+'</span>'
         + '<span><span class="rn-itype '+typeClass+'" style="font-size:9px;padding:2px 6px;border-radius:6px">'+escHtml(t.type)+'</span></span>'
         + '<span>'+(sevColor?('<span style="font-size:10px;padding:2px 7px;border-radius:8px;font-weight:600;font-family:var(--font-mono);background:'+sevColor+'22;color:'+sevColor+'">'+escHtml(t.severity)+'</span>'):'<span style="color:var(--text3);font-size:11px">—</span>')+'</span>'
         + '<div style="display:flex;gap:4px;flex-wrap:wrap">'+labelsHtml+'</div>'
