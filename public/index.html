@@ -6373,7 +6373,12 @@ async function spLoadDiscovery(){
     var jql = 'sprint is not EMPTY ORDER BY created DESC';
     var fields = 'customfield_10039,'+spState.sprintFieldId;
     var all=[], startAt=0, pageSize=100, guard=0, nextPageToken=null;
-    while(guard<5){ // discovery only - light cap, not the full data pull
+    var seenSprintIds={};
+    // Keep paging until we've found a healthy number of distinct sprints
+    // (not just a fixed ticket count) - a handful of teams creating lots of
+    // tickets can otherwise eat the whole cap while only covering 2-3
+    // sprints. Still bounded so this can't run away on a huge instance.
+    while(guard<25){
       var qs = '/rest/api/3/search/jql?jql='+encodeURIComponent(jql)+'&fields='+fields+'&maxResults='+pageSize
         + (nextPageToken ? ('&nextPageToken='+encodeURIComponent(nextPageToken)) : ('&startAt='+startAt));
       var resp = await jiraGet(qs);
@@ -6382,10 +6387,17 @@ async function spLoadDiscovery(){
       guard++;
       nextPageToken = resp.nextPageToken || null;
       startAt += pageIssues.length;
+      pageIssues.forEach(function(i){
+        spParseSprintField(i.fields && i.fields[spState.sprintFieldId]).forEach(function(sp){
+          if(sp.id!=null) seenSprintIds[sp.id]=true;
+        });
+      });
       var moreByToken=!!nextPageToken;
       var moreByTotal=(typeof resp.total==='number')&&all.length<resp.total;
       var moreByFullPage=!moreByToken&&typeof resp.total!=='number'&&pageIssues.length===pageSize;
-      if(!pageIssues.length||(!moreByToken&&!moreByTotal&&!moreByFullPage)) break;
+      var hasMore = !!pageIssues.length && (moreByToken||moreByTotal||moreByFullPage);
+      var enoughSprints = Object.keys(seenSprintIds).length >= 20 && guard >= 3;
+      if(!hasMore || enoughSprints) break;
     }
     spState.discoveryTickets = all.map(function(i){
       var f=i.fields||{};
