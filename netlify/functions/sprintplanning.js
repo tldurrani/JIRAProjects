@@ -256,25 +256,26 @@ function buildSprintTableHtml(rows, previousApprovals) {
     ? `<p><strong>Included:</strong> ${pairs.map(p => `${escapeHtml(p.team)} \u2014 ${escapeHtml(p.sprintName)}`).join(' &nbsp;|&nbsp; ')}</p>`
     : '';
 
-  const th = (label) => `<th style="white-space:nowrap">${label}</th>`;
   const headerCols = isCombined
-    ? [th('Ticket'), th('Name'), th('Team'), th('Sprint'), th('Epic'), th('Type'), th('Severity'), th('Labels'), th('Assignee'), th('Reporter'), th('Created'), th('Release'), th('Flag'), th('Summary'), th('Approved'), th('Approved By')].join('')
-    : [th('Ticket'), th('Name'), th('Epic'), th('Type'), th('Severity'), th('Labels'), th('Assignee'), th('Reporter'), th('Created'), th('Release'), th('Flag'), th('Summary'), th('Approved'), th('Approved By')].join('');
+    ? '<th>Ticket</th><th>Name</th><th>Team</th><th>Sprint</th><th>Epic</th><th>Type</th><th>Severity</th><th>Labels</th><th>Assignee</th><th>Reporter</th><th>Created</th><th>Release</th><th>Flag</th><th>Summary</th><th>Approved</th><th>Approved By</th>'
+    : '<th>Ticket</th><th>Name</th><th>Epic</th><th>Type</th><th>Severity</th><th>Labels</th><th>Assignee</th><th>Reporter</th><th>Created</th><th>Release</th><th>Flag</th><th>Summary</th><th>Approved</th><th>Approved By</th>';
 
-  // No fixed column widths here on purpose: two rounds of hand-tuned pixel
-  // widths both still got proportionally squeezed by Confluence down to the
-  // point where short headers like "Severity"/"Approved" wrapped onto two
-  // lines - meaning the actual rendering container is narrower than assumed
-  // and guessing a third number blind isn't reliable. Letting the table use
-  // natural content-based sizing (no colgroup, no data-layout) means the
-  // browser sizes each column to fit its own content first, and any
-  // necessary squeezing lands on the free-text columns (Name/Epic/Summary),
-  // which can wrap without looking broken - not on short single-word ones.
+  // Column widths, in px. Only Severity and Approved ever actually wrapped
+  // across prior attempts - every other column rendered fine at its
+  // assigned width, so this isn't a page-wide squeeze issue; those two
+  // specific columns just need more room than their character count
+  // suggests (likely the bold header font). Widened both substantially.
+  const colWidths = isCombined
+    ? [85, 160, 95, 120, 150, 65, 160, 110, 95, 95, 90, 105, 65, 200, 170, 130]
+    : [85, 170, 150, 65, 160, 120, 100, 100, 95, 110, 65, 220, 170, 130];
+  const colgroup = `<colgroup>${colWidths.map(w => `<col style="width: ${w}.0px;" />`).join('')}</colgroup>`;
+
   return `<h1>${escapeHtml(title)}</h1>
 <p>Generated ${generated} from the Sprint Planning tab. Review each ticket below, check the box once approved, and add your name in the "Approved By" column.</p>
 ${includedNote}
 ${releaseNote}
-<table>
+<table data-layout="full-width">
+  ${colgroup}
   <tbody>
     <tr>
       ${headerCols}
