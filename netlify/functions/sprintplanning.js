@@ -116,9 +116,19 @@ function buildSprintTableHtml(team, sprintName, rows) {
     </tr>`;
   }).join('\n');
 
+  // Column widths, in px - Summary and Approved By get the most room since
+  // they hold prose/free text; everything else is a short fixed value so it
+  // doesn't need to wrap at all. data-layout="full-width" is the same
+  // attribute Confluence's editor sets when you choose the "Full width"
+  // table option, so this renders across the whole page instead of
+  // Confluence's default constrained/centered width.
+  const colWidths = [90, 70, 80, 140, 120, 120, 100, 70, 360, 100, 150];
+  const colgroup = `<colgroup>${colWidths.map(w => `<col style="width: ${w}.0px;" />`).join('')}</colgroup>`;
+
   return `<h1>${escapeHtml(sprintName)} \u2014 ${escapeHtml(team)} \u2014 Sprint Approval</h1>
 <p>Generated ${generated} from the Sprint Planning tab. Review each ticket below, check the box once approved, and add your name in the "Approved By" column.</p>
-<table>
+<table data-layout="full-width">
+  ${colgroup}
   <tbody>
     <tr>
       <th>Ticket</th><th>Type</th><th>Severity</th><th>Labels</th><th>Assignee</th><th>Reporter</th><th>Created</th><th>Flag</th><th>Summary</th><th>Approved</th><th>Approved By</th>
