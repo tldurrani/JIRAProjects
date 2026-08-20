@@ -163,6 +163,7 @@ function buildSprintTableHtml(team, sprintName, rows, previousApprovals) {
     const approvedByCell = prev && prev.approvedBy ? escapeHtml(prev.approvedBy) : '&nbsp;';
     return `<tr>
       <td><a href="${JIRA_BASE}/browse/${escapeHtml(r.key)}">${escapeHtml(r.key)}</a></td>
+      <td>${escapeHtml(r.name || '')}</td>
       <td>${escapeHtml(r.type)}</td>
       <td>${escapeHtml(r.severity || '\u2014')}</td>
       <td>${labelsText}</td>
@@ -185,13 +186,13 @@ function buildSprintTableHtml(team, sprintName, rows, previousApprovals) {
     ? `<p><strong>Target Release:</strong> ${escapeHtml(distinctReleases[0])}</p>`
     : '';
 
-  // Column widths, in px - Summary and Approved By get the most room since
+  // Column widths, in px - Name/Summary/Approved By get the most room since
   // they hold prose/free text; everything else is a short fixed value so it
   // doesn't need to wrap at all. data-layout="full-width" is the same
   // attribute Confluence's editor sets when you choose the "Full width"
   // table option, so this renders across the whole page instead of
   // Confluence's default constrained/centered width.
-  const colWidths = [90, 70, 80, 140, 120, 120, 100, 130, 70, 320, 100, 150];
+  const colWidths = [90, 220, 70, 80, 140, 120, 120, 100, 130, 70, 280, 100, 150];
   const colgroup = `<colgroup>${colWidths.map(w => `<col style="width: ${w}.0px;" />`).join('')}</colgroup>`;
 
   return `<h1>${escapeHtml(sprintName)} \u2014 ${escapeHtml(team)} \u2014 Sprint Approval</h1>
@@ -201,7 +202,7 @@ ${releaseNote}
   ${colgroup}
   <tbody>
     <tr>
-      <th>Ticket</th><th>Type</th><th>Severity</th><th>Labels</th><th>Assignee</th><th>Reporter</th><th>Created</th><th>Release</th><th>Flag</th><th>Summary</th><th>Approved</th><th>Approved By</th>
+      <th>Ticket</th><th>Name</th><th>Type</th><th>Severity</th><th>Labels</th><th>Assignee</th><th>Reporter</th><th>Created</th><th>Release</th><th>Flag</th><th>Summary</th><th>Approved</th><th>Approved By</th>
     </tr>
     ${rowsHtml}
   </tbody>

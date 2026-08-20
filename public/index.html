@@ -6595,13 +6595,13 @@ function spExportCSV(){
   if(!rows.length) return;
   var sprintOpt = spSprintOptions().find(function(s){ return s.id===spState.sprintFilter; });
   var sprintName = sprintOpt ? sprintOpt.name : ('Sprint'+spState.sprintFilter);
-  var header = ['Key','Project','Type','Severity','Labels','Assignee','Reporter','Created','Release','Flag','Summary'];
+  var header = ['Key','Name','Project','Type','Severity','Labels','Assignee','Reporter','Created','Release','Flag','Summary'];
   var csvRows = [header].concat(rows.map(function(t){
     return [
-      t.key, t.project, t.type, t.severity||'',
+      t.key, t.summary, t.project, t.type, t.severity||'',
       (t.labels||[]).join(', '), t.assignee, t.reporter,
       spFmtDate(t.created), spFmtRelease(t.releases), t.flagged?'Flagged':'',
-      spState.summaries[t.key] || t.summary,
+      spState.summaries[t.key] || '',
     ];
   }));
   var csv = csvRows.map(function(r){ return r.map(bugsCsvEscape).join(','); }).join('\r\n');
@@ -6668,10 +6668,10 @@ async function spPublish(){
   try {
     var payloadRows = rows.map(function(t){
       return {
-        key:t.key, type:t.type, severity:t.severity, labels:t.labels,
+        key:t.key, name:t.summary, type:t.type, severity:t.severity, labels:t.labels,
         assignee:t.assignee, reporter:t.reporter, created:t.created,
         release: spFmtRelease(t.releases),
-        flagged:t.flagged, summary: spState.summaries[t.key] || t.summary,
+        flagged:t.flagged, summary: spState.summaries[t.key] || '',
       };
     });
     var res = await fetch('/api/sprintplanning', {
@@ -6807,10 +6807,10 @@ function renderSprintPlanning(){
       + ' — <a href="'+escHtml(spState.publishResult.url)+'" target="_blank" style="color:#4ade80;text-decoration:underline">Open in Confluence</a></div>';
   }
 
-  var grid='80px 70px 90px 70px 1fr 120px 120px 90px 130px 70px 2fr';
+  var grid='80px 220px 70px 90px 70px 1fr 120px 120px 90px 130px 70px 2fr';
   html += '<div style="background:var(--bg2);border:0.5px solid var(--border);border-radius:12px;overflow:hidden">';
   html += '<div style="display:grid;grid-template-columns:'+grid+';gap:10px;padding:9px 14px;background:var(--bg3);border-bottom:0.5px solid var(--border)">';
-  [['key','Key'],['project','Project'],['type','Type'],['severity','Severity'],['labels','Labels'],['assignee','Assignee'],['reporter','Reporter'],['created','Created'],['release','Release'],['flagged','Flag'],[null,'Summary']].forEach(function(c){
+  [['key','Key'],['summary','Name'],['project','Project'],['type','Type'],['severity','Severity'],['labels','Labels'],['assignee','Assignee'],['reporter','Reporter'],['created','Created'],['release','Release'],['flagged','Flag'],[null,'Summary']].forEach(function(c){
     var arrow = c[0]===null ? '' : (spState.sort.col!==c[0] ? '<span style="opacity:0.3"> &#8597;</span>' : '<span> '+(spState.sort.dir==='asc'?'&#8593;':'&#8595;')+'</span>');
     var cursor = c[0]===null ? '' : 'cursor:pointer;user-select:none;';
     var onclick = c[0]===null ? '' : ' onclick="spSetSort(\''+c[0]+'\')"';
@@ -6829,6 +6829,7 @@ function renderSprintPlanning(){
       var releaseText = spFmtRelease(t.releases);
       html += '<div style="display:grid;grid-template-columns:'+grid+';gap:10px;padding:8px 14px;border-bottom:0.5px solid rgba(255,255,255,0.04);align-items:center">'
         + '<a href="https://riversidejira.atlassian.net/browse/'+escHtml(t.key)+'" target="_blank" style="font-family:var(--font-mono);font-size:11px;color:var(--blue);text-decoration:none">'+escHtml(t.key)+'</a>'
+        + '<span style="font-size:12px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+escHtml(t.summary)+'">'+escHtml(t.summary)+'</span>'
         + '<span style="font-size:11px;color:var(--text3);font-family:var(--font-mono)">'+escHtml(t.project)+'</span>'
         + '<span><span class="rn-itype '+typeClass+'" style="font-size:9px;padding:2px 6px;border-radius:6px">'+escHtml(t.type)+'</span></span>'
         + '<span>'+(sevColor?('<span style="font-size:10px;padding:2px 7px;border-radius:8px;font-weight:600;font-family:var(--font-mono);background:'+sevColor+'22;color:'+sevColor+'">'+escHtml(t.severity)+'</span>'):'<span style="color:var(--text3);font-size:11px">—</span>')+'</span>'
