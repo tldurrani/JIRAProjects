@@ -369,6 +369,7 @@ document.addEventListener('DOMContentLoaded', initFirebase);
     <button class="tab-btn" onclick="switchTab('releasenotes',this)">Release Notes</button>
     <button class="tab-btn" onclick="switchTab('planning',this)">Planning</button>
     <button class="tab-btn" onclick="switchTab('bugs',this)">Bugs</button>
+    <button class="tab-btn" onclick="switchTab('sprintplanning',this)">Sprint Planning</button>
     <button class="tab-btn" onclick="switchTab('settings',this)">Settings</button>
   </div>
 </div>
@@ -776,6 +777,7 @@ document.addEventListener('DOMContentLoaded', initFirebase);
   <!-- ═══════════════════════════════════════════════════════════ END RELEASE NOTES TAB -->
 
   <div id="tab-bugs" class="tab-content"><div id="bugs-root"></div></div>
+  <div id="tab-sprintplanning" class="tab-content"><div id="sp-root"></div></div>
 <div id="tab-planning" class="tab-content">
   <style>
     .pl-sub-bar{display:flex;gap:0;border-bottom:0.5px solid var(--border);margin-bottom:18px}
@@ -1122,6 +1124,7 @@ function switchTab(name,btn){
   if(name==='settings') populateSettingsQuarterSelect();
   if(name==='settings') renderSettings();
   if(name==='bugs'){ if(!bugsState.loaded&&!bugsState.loading) loadBugs(); else renderBugs(); }
+  if(name==='sprintplanning') spOnTabOpen();
 }
 function renderAll(){
   renderFutureQuarterBanner();
@@ -6260,6 +6263,411 @@ function rnSaveHistory(entry) {
     return rnGetTrackerDoc().update({ releaseHistory: existing.slice(0, 50) });
   }).then(function() { rnLoadHistory(); })
     .catch(function(e) { console.warn('Could not save release history:', e.message); });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SPRINT PLANNING MODULE
+// Select a team + sprint, review every ticket in it (labels, assignee,
+// reporter, created date, flag), then publish a Confluence approval doc
+// for that sprint+team combination. Fully self-contained — doesn't touch
+// or depend on any other tab's state.
+// ═══════════════════════════════════════════════════════════════════════════
+var spState = {
+  project: null,
+  availableProjects: [],
+  projectsLoaded: false,
+  sprintFieldId: null,
+  flaggedFieldId: null,
+  fieldsResolved: false,
+  fieldsError: null,
+  teamFilter: 'all',
+  sprintFilter: null,     // selected sprint id, or null = none picked yet
+  tickets: [],
+  loading: false,
+  loaded: false,
+  loadError: null,
+  summaries: {},          // ticket key -> AI one-line summary
+  summarizing: false,
+  publishing: false,
+  publishResult: null,
+  publishError: null,
+};
+var SP_DEFAULT_PROJECT = 'DM';
+var SP_TYPE_STYLE = { 'Bug':'rn-itype-bug', 'Story':'rn-itype-story', 'Task':'rn-itype-task', 'Spike':'rn-itype-spike', 'Sub-task':'rn-itype-subtask', 'Subtask':'rn-itype-subtask' };
+
+function spOnTabOpen(){
+  if(!spState.loaded && !spState.loading) spLoadAll();
+  else renderSprintPlanning();
+}
+
+// Resolves the real "Sprint" and "Flagged" field IDs from this Jira
+// instance's field list, rather than guessing a customfield number — field
+// IDs vary per instance and hardcoding one was exactly the bug that broke
+// the Velocity-by-Team chart earlier.
+async function spResolveFields(){
+  if(spState.fieldsResolved) return;
+  try {
+    var fields = await jiraGet('/rest/api/3/field');
+    var sprintF = fields.find(function(f){ return (f.name||'').toLowerCase()==='sprint'; });
+    var flagF = fields.find(function(f){ return (f.name||'').toLowerCase()==='flagged'; })
+      || fields.find(function(f){ return (f.name||'').toLowerCase().indexOf('flag')>=0; });
+    spState.sprintFieldId = sprintF ? sprintF.id : null;
+    spState.flaggedFieldId = flagF ? flagF.id : null;
+    if(!spState.sprintFieldId) spState.fieldsError = 'Could not find a "Sprint" field on this Jira instance.';
+  } catch(e) {
+    console.error('spResolveFields:', e);
+    spState.fieldsError = e.message;
+  }
+  spState.fieldsResolved = true;
+}
+
+async function spLoadProjects(){
+  if(spState.projectsLoaded) return;
+  try {
+    var resp = await jiraGet('/rest/api/3/project?maxResults=200');
+    var list = Array.isArray(resp) ? resp : (resp.values||[]);
+    spState.availableProjects = list.map(function(p){ return {key:p.key, name:p.name}; }).sort(function(a,b){ return a.key<b.key?-1:(a.key>b.key?1:0); });
+  } catch(e) { console.error('spLoadProjects:', e); spState.availableProjects = []; }
+  spState.projectsLoaded = true;
+  if(!spState.project){
+    var hasDefault = spState.availableProjects.some(function(p){ return p.key===SP_DEFAULT_PROJECT; });
+    spState.project = hasDefault ? SP_DEFAULT_PROJECT : (spState.availableProjects[0] && spState.availableProjects[0].key) || null;
+  }
+}
+
+// Handles both shapes Jira's Sprint field can come back as: a clean object
+// (modern Cloud API) or the legacy serialized string
+// ("com.atlassian...Sprint@abc[id=1,name=Sprint 1,state=ACTIVE,...]").
+function spParseSprintField(raw){
+  if(!raw) return [];
+  if(!Array.isArray(raw)) raw = [raw];
+  return raw.map(function(item){
+    if(typeof item === 'object' && item !== null){
+      return { id:item.id, name:item.name, state:(item.state||'').toLowerCase(), startDate:item.startDate, endDate:item.endDate };
+    }
+    var s = String(item);
+    var idm=s.match(/id=(\d+)/), namem=s.match(/name=([^,\]]+)/), statem=s.match(/state=([^,\]]+)/),
+        startm=s.match(/startDate=([^,\]]+)/), endm=s.match(/endDate=([^,\]]+)/);
+    return {
+      id: idm?parseInt(idm[1],10):null,
+      name: namem?namem[1]:'Unknown Sprint',
+      state: statem?statem[1].toLowerCase():'',
+      startDate: startm?startm[1]:'',
+      endDate: endm?endm[1]:'',
+    };
+  }).filter(function(sp){ return sp.id!=null; });
+}
+function spPrimarySprint(sprints){
+  if(!sprints || !sprints.length) return null;
+  var active = sprints.find(function(s){ return s.state==='active'; });
+  return active || sprints[sprints.length-1];
+}
+
+async function spLoadAll(){
+  if(spState.loading) return;
+  spState.loading = true;
+  spState.loadError = null;
+  var root = document.getElementById('sp-root');
+  if(root) root.innerHTML = '<div style="padding:40px;text-align:center;color:var(--text3)">&#8635; Loading sprint data from Jira…</div>';
+
+  await spResolveFields();
+  await spLoadProjects();
+
+  if(spState.fieldsError || !spState.sprintFieldId){
+    spState.tickets=[]; spState.loaded=true; spState.loading=false; renderSprintPlanning(); return;
+  }
+  if(!spState.project){
+    spState.tickets=[]; spState.loaded=true; spState.loading=false; renderSprintPlanning(); return;
+  }
+
+  try {
+    var jql = 'project = "'+spState.project+'" AND sprint is not EMPTY ORDER BY created DESC';
+    var fieldList = ['summary','description','issuetype','status','customfield_10040','customfield_10039','labels','assignee','reporter','created',spState.sprintFieldId];
+    if(spState.flaggedFieldId) fieldList.push(spState.flaggedFieldId);
+    var fields = fieldList.join(',');
+    var all=[], startAt=0, pageSize=100, guard=0, nextPageToken=null;
+    while(guard<30){
+      var qs = '/rest/api/3/search/jql?jql='+encodeURIComponent(jql)+'&fields='+fields+'&expand=renderedFields&maxResults='+pageSize
+        + (nextPageToken ? ('&nextPageToken='+encodeURIComponent(nextPageToken)) : ('&startAt='+startAt));
+      var resp = await jiraGet(qs);
+      var pageIssues = resp.issues||[];
+      all = all.concat(pageIssues);
+      guard++;
+      nextPageToken = resp.nextPageToken || null;
+      startAt += pageIssues.length;
+      var moreByToken=!!nextPageToken;
+      var moreByTotal=(typeof resp.total==='number')&&all.length<resp.total;
+      var moreByFullPage=!moreByToken&&typeof resp.total!=='number'&&pageIssues.length===pageSize;
+      if(!pageIssues.length||(!moreByToken&&!moreByTotal&&!moreByFullPage)) break;
+    }
+    spState.tickets = all.map(function(i){
+      var f=i.fields||{};
+      var sprints = spParseSprintField(f[spState.sprintFieldId]);
+      var flaggedRaw = spState.flaggedFieldId ? f[spState.flaggedFieldId] : null;
+      var flagged = Array.isArray(flaggedRaw) ? flaggedRaw.length>0 : !!flaggedRaw;
+      var descHtml = (i.renderedFields && i.renderedFields.description) || '';
+      return {
+        key: i.key,
+        type: (f.issuetype&&f.issuetype.name)||'',
+        status: (f.status&&f.status.name)||'',
+        statusCat: (f.status&&f.status.statusCategory&&f.status.statusCategory.key)||'new',
+        severity: (f.customfield_10040&&f.customfield_10040.value)||'',
+        team: (f.customfield_10039&&f.customfield_10039.value)||'',
+        labels: f.labels||[],
+        assignee: (f.assignee&&f.assignee.displayName)||'Unassigned',
+        reporter: (f.reporter&&f.reporter.displayName)||'Unknown',
+        created: f.created||'',
+        flagged: flagged,
+        sprints: sprints,
+        summary: (f.summary||'').trim(),
+        descHtml: descHtml,
+      };
+    });
+    spState.loaded = true;
+  } catch(e) {
+    console.error('spLoadAll:', e);
+    spState.loadError = e.message;
+    spState.tickets = [];
+    spState.loaded = true;
+  }
+  spState.loading = false;
+  renderSprintPlanning();
+}
+
+function spSetProject(key){
+  if(spState.project===key) return;
+  spState.project = key;
+  spState.loaded = false;
+  spState.teamFilter = 'all';
+  spState.sprintFilter = null;
+  spState.summaries = {};
+  spState.publishResult = null; spState.publishError = null;
+  spLoadAll();
+}
+function spFilterTeam(t){
+  spState.teamFilter = t;
+  spState.sprintFilter = null;
+  spState.publishResult = null; spState.publishError = null;
+  renderSprintPlanning();
+}
+function spSetSprint(sprintId){
+  spState.sprintFilter = sprintId ? parseInt(sprintId,10) : null;
+  spState.publishResult = null; spState.publishError = null;
+  renderSprintPlanning();
+}
+
+function spTeamOptions(){
+  var seen={};
+  spState.tickets.forEach(function(t){ if(t.team) seen[t.team]=true; });
+  return Object.keys(seen).sort();
+}
+function spSprintOptions(){
+  var byId={};
+  spState.tickets.forEach(function(t){
+    if(spState.teamFilter!=='all' && t.team!==spState.teamFilter) return;
+    var sp = spPrimarySprint(t.sprints);
+    if(sp && sp.id!=null && !byId[sp.id]) byId[sp.id]=sp;
+  });
+  var list = Object.keys(byId).map(function(k){ return byId[k]; });
+  list.sort(function(a,b){
+    var rank=function(s){ return s.state==='active'?0:s.state==='future'?1:2; };
+    var ra=rank(a), rb=rank(b);
+    if(ra!==rb) return ra-rb;
+    return (new Date(b.startDate||0)) - (new Date(a.startDate||0));
+  });
+  return list;
+}
+function spGetFilteredTickets(){
+  if(spState.sprintFilter==null) return [];
+  return spState.tickets.filter(function(t){
+    if(spState.teamFilter!=='all' && t.team!==spState.teamFilter) return false;
+    var sp = spPrimarySprint(t.sprints);
+    return sp && sp.id===spState.sprintFilter;
+  });
+}
+
+function spStripHtml(html){
+  return String(html||'').replace(/<[^>]*>/g,' ').replace(/&nbsp;/g,' ').replace(/\s+/g,' ').trim();
+}
+
+async function spGenerateSummaries(){
+  var rows = spGetFilteredTickets();
+  var need = rows.filter(function(t){ return !spState.summaries[t.key]; });
+  if(!need.length) return;
+  spState.summarizing = true;
+  renderSprintPlanning();
+  var results = await Promise.all(need.map(function(t){
+    var desc = spStripHtml(t.descHtml).slice(0,600);
+    var prompt = 'Ticket '+t.key+' ('+t.type+'): '+t.summary+(desc?('\n\nDetails: '+desc):'')+'\n\nWrite ONE concise sentence (max 20 words) describing what this ticket does or solves, for a manager reviewing sprint approval. No preamble, do not repeat the ticket key.';
+    return fetch('/api/summarize', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ title:'Sprint Ticket Summary '+t.key, description: prompt }),
+    }).then(function(res){
+      if(!res.ok) return res.text().then(function(txt){ throw new Error('Server error '+res.status+': '+txt.slice(0,150)); });
+      return res.json();
+    }).then(function(data){
+      if(data.error) throw new Error(data.error);
+      return { key:t.key, text:(data.summary||'').trim() };
+    }).catch(function(e){
+      return { key:t.key, text:'(summary failed: '+e.message+')' };
+    });
+  }));
+  results.forEach(function(r){ spState.summaries[r.key]=r.text; });
+  spState.summarizing = false;
+  renderSprintPlanning();
+}
+
+async function spPublish(){
+  var rows = spGetFilteredTickets();
+  if(!rows.length) return;
+  if(spState.teamFilter==='all'){
+    spState.publishError = 'Pick a specific team before publishing — approval docs are organized by team.';
+    renderSprintPlanning();
+    return;
+  }
+  var sprintOpt = spSprintOptions().find(function(s){ return s.id===spState.sprintFilter; });
+  var sprintName = sprintOpt ? sprintOpt.name : ('Sprint '+spState.sprintFilter);
+
+  spState.publishing = true;
+  spState.publishError = null;
+  spState.publishResult = null;
+  renderSprintPlanning();
+
+  try {
+    var payloadRows = rows.map(function(t){
+      return {
+        key:t.key, type:t.type, severity:t.severity, labels:t.labels,
+        assignee:t.assignee, reporter:t.reporter, created:t.created,
+        flagged:t.flagged, summary: spState.summaries[t.key] || t.summary,
+      };
+    });
+    var res = await fetch('/api/sprintplanning', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ team: spState.teamFilter, sprintName: sprintName, rows: payloadRows }),
+    });
+    if(!res.ok){ var errText=await res.text(); throw new Error('Server error '+res.status+': '+errText.slice(0,300)); }
+    var data = await res.json();
+    if(data.error) throw new Error(data.error);
+    spState.publishResult = data;
+  } catch(e) {
+    spState.publishError = e.message;
+  }
+  spState.publishing = false;
+  renderSprintPlanning();
+}
+
+function spFmtDate(iso){
+  if(!iso) return '';
+  var d=new Date(iso);
+  if(isNaN(d.getTime())) return '';
+  return d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
+}
+
+function renderSprintPlanning(){
+  var root=document.getElementById('sp-root'); if(!root) return;
+  if(spState.loading) return;
+
+  if(spState.loadError){
+    root.innerHTML = '<div style="padding:40px;text-align:center;color:var(--red)">Failed to load sprint data: '+escHtml(spState.loadError)+'<br><br>'
+      + '<button class="btn btn-ghost btn-sm" onclick="spState.loaded=false;spState.loadError=null;spLoadAll()">&#8635; Retry</button></div>';
+    return;
+  }
+  if(spState.fieldsError){
+    root.innerHTML = '<div style="padding:40px;text-align:center;color:var(--red)">'+escHtml(spState.fieldsError)+'<br><br>'
+      + '<button class="btn btn-ghost btn-sm" onclick="spState.fieldsResolved=false;spState.loaded=false;spLoadAll()">&#8635; Retry</button></div>';
+    return;
+  }
+
+  var html='';
+
+  // Project selector
+  html += '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:14px">';
+  html += '<select onchange="spSetProject(this.value)" style="font-size:12px;padding:5px 10px;border-radius:6px;border:0.5px solid var(--border2);background:var(--bg3);color:var(--text)">';
+  (spState.availableProjects||[]).forEach(function(p){
+    html += '<option value="'+escHtml(p.key)+'"'+(p.key===spState.project?' selected':'')+'>'+escHtml(p.key)+' — '+escHtml(p.name)+'</option>';
+  });
+  html += '</select>';
+  html += '<button onclick="spState.loaded=false;spLoadAll()" style="font-size:11px;padding:5px 10px;border-radius:6px;border:0.5px solid var(--border2);background:transparent;color:var(--text2);cursor:pointer">&#8635; Refresh</button>';
+  html += '</div>';
+
+  // Team + Sprint selectors
+  var teamOpts = spTeamOptions();
+  var sprintOpts = spSprintOptions();
+  html += '<div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center;margin-bottom:16px">';
+  html += '<div><div style="font-size:10px;color:var(--text3);text-transform:uppercase;font-family:var(--font-mono);margin-bottom:4px">Team</div>';
+  html += '<select onchange="spFilterTeam(this.value)" style="font-size:13px;padding:6px 10px;border-radius:6px;border:0.5px solid var(--border2);background:var(--bg3);color:var(--text);min-width:160px">';
+  html += '<option value="all"'+(spState.teamFilter==='all'?' selected':'')+'>All Teams</option>';
+  teamOpts.forEach(function(t){ html += '<option value="'+escHtml(t)+'"'+(spState.teamFilter===t?' selected':'')+'>'+escHtml(t)+'</option>'; });
+  html += '</select></div>';
+
+  html += '<div><div style="font-size:10px;color:var(--text3);text-transform:uppercase;font-family:var(--font-mono);margin-bottom:4px">Sprint</div>';
+  html += '<select onchange="spSetSprint(this.value)" style="font-size:13px;padding:6px 10px;border-radius:6px;border:0.5px solid var(--border2);background:var(--bg3);color:var(--text);min-width:220px">';
+  html += '<option value="">Select a sprint…</option>';
+  sprintOpts.forEach(function(s){
+    var stateLabel = s.state==='active'?' (Active)':s.state==='future'?' (Future)':s.state==='closed'?' (Closed)':'';
+    html += '<option value="'+s.id+'"'+(spState.sprintFilter===s.id?' selected':'')+'>'+escHtml(s.name)+stateLabel+'</option>';
+  });
+  html += '</select></div>';
+  html += '</div>';
+
+  if(spState.sprintFilter==null){
+    html += '<div style="padding:40px;text-align:center;color:var(--text3)">Pick a team and sprint above to view its tickets.</div>';
+    root.innerHTML = html;
+    return;
+  }
+
+  var rows = spGetFilteredTickets();
+  var sprintOpt = sprintOpts.find(function(s){ return s.id===spState.sprintFilter; });
+  var sprintLabel = sprintOpt ? sprintOpt.name : '';
+
+  // Action row
+  html += '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:14px">';
+  html += '<span style="font-size:12px;color:var(--text3)">'+rows.length+' ticket'+(rows.length===1?'':'s')+' in '+escHtml(sprintLabel)+'</span>';
+  html += '<button class="btn btn-ghost btn-sm" onclick="spGenerateSummaries()" style="margin-left:auto"'+(spState.summarizing?' disabled':'')+'>'+(spState.summarizing?'&#8635; Generating…':'&#10022; Generate AI Summaries')+'</button>';
+  html += '<button class="btn btn-sm" onclick="spPublish()"'+(spState.publishing?' disabled':'')+'>'+(spState.publishing?'&#8635; Publishing…':'&#128228; Publish to Confluence')+'</button>';
+  html += '</div>';
+
+  if(spState.publishError){
+    html += '<div style="padding:12px 14px;background:rgba(239,68,68,0.1);border:0.5px solid rgba(239,68,68,0.3);border-radius:8px;color:#f87171;font-size:12px;margin-bottom:14px">'+escHtml(spState.publishError)+'</div>';
+  }
+  if(spState.publishResult){
+    html += '<div style="padding:12px 14px;background:rgba(34,197,94,0.1);border:0.5px solid rgba(34,197,94,0.3);border-radius:8px;color:#4ade80;font-size:12px;margin-bottom:14px">'
+      + (spState.publishResult.updated ? 'Updated existing approval page' : 'Created new approval page')
+      + (spState.publishResult.sectionCreated ? ' (also created the "'+escHtml(spState.publishResult.sectionTitle)+'" section)' : '')
+      + ' — <a href="'+escHtml(spState.publishResult.url)+'" target="_blank" style="color:#4ade80;text-decoration:underline">Open in Confluence</a></div>';
+  }
+
+  var grid='80px 90px 70px 1fr 120px 120px 90px 70px 2fr';
+  html += '<div style="background:var(--bg2);border:0.5px solid var(--border);border-radius:12px;overflow:hidden">';
+  html += '<div style="display:grid;grid-template-columns:'+grid+';gap:10px;padding:9px 14px;background:var(--bg3);border-bottom:0.5px solid var(--border)">';
+  ['Key','Type','Severity','Labels','Assignee','Reporter','Created','Flag','Summary'].forEach(function(c){
+    html += '<span style="font-size:10px;color:var(--text3);font-family:var(--font-mono);text-transform:uppercase">'+c+'</span>';
+  });
+  html += '</div>';
+
+  if(!rows.length){
+    html += '<div style="padding:40px;text-align:center;color:var(--text3)">No tickets found for this team/sprint combination</div>';
+  } else {
+    rows.forEach(function(t){
+      var typeClass = SP_TYPE_STYLE[t.type] || 'rn-itype-task';
+      var sevColor = {S1:'#f87171',S2:'#fbbf24',S3:'#60a5fa',S4:'#a78bfa'}[t.severity] || null;
+      var labelsHtml = (t.labels&&t.labels.length) ? t.labels.map(function(l){ return '<span class="rn-label">'+escHtml(l)+'</span>'; }).join('') : '<span style="color:var(--text3);font-size:11px">—</span>';
+      var summaryText = spState.summaries[t.key] || '<span style="color:var(--text3)">Not generated yet</span>';
+      html += '<div style="display:grid;grid-template-columns:'+grid+';gap:10px;padding:8px 14px;border-bottom:0.5px solid rgba(255,255,255,0.04);align-items:center">'
+        + '<a href="https://riversidejira.atlassian.net/browse/'+escHtml(t.key)+'" target="_blank" style="font-family:var(--font-mono);font-size:11px;color:var(--blue);text-decoration:none">'+escHtml(t.key)+'</a>'
+        + '<span><span class="rn-itype '+typeClass+'" style="font-size:9px;padding:2px 6px;border-radius:6px">'+escHtml(t.type)+'</span></span>'
+        + '<span>'+(sevColor?('<span style="font-size:10px;padding:2px 7px;border-radius:8px;font-weight:600;font-family:var(--font-mono);background:'+sevColor+'22;color:'+sevColor+'">'+escHtml(t.severity)+'</span>'):'<span style="color:var(--text3);font-size:11px">—</span>')+'</span>'
+        + '<div style="display:flex;gap:4px;flex-wrap:wrap">'+labelsHtml+'</div>'
+        + '<span style="font-size:11px;color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+escHtml(t.assignee)+'">'+escHtml(t.assignee)+'</span>'
+        + '<span style="font-size:11px;color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+escHtml(t.reporter)+'">'+escHtml(t.reporter)+'</span>'
+        + '<span style="font-size:11px;color:var(--text3);white-space:nowrap">'+(spFmtDate(t.created)||'—')+'</span>'
+        + '<span>'+(t.flagged?'<span style="color:#f87171;font-size:11px;font-weight:600">&#128681; Flag</span>':'<span style="color:var(--text3);font-size:11px">—</span>')+'</span>'
+        + '<span style="font-size:12px;color:var(--text2)">'+summaryText+'</span>'
+        + '</div>';
+    });
+  }
+  html += '</div>';
+  root.innerHTML = html;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

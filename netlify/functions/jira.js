@@ -11,6 +11,7 @@ const ALLOWED_PATHS = [
   /^\/rest\/api\/3\/myself/,                              // auth check
   /^\/rest\/api\/3\/label/,                               // label autocomplete
   /^\/rest\/api\/3\/version/,                             // fix versions for release notes
+  /^\/rest\/api\/3\/field$/,                              // field metadata - resolve Sprint/Flagged field IDs dynamically (Sprint Planning)
 ];
 
 function isAllowed(path) {
