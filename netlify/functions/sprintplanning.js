@@ -140,15 +140,21 @@ function fmtDate(iso) {
 // correctly even if tickets were added/removed/reordered since last publish).
 function extractPreviousApprovals(oldHtml) {
   const map = {};
-  if (!oldHtml) return map;
-  const rowRe = /<tr>([\s\S]*?)<\/tr>/g;
+  const diag = { rowsScanned: 0, rowsMatchedKey: 0, rowsWithApprovalData: 0 };
+  if (!oldHtml) return { map, diag };
+  // Allow attributes on <tr> - Confluence can add row-level metadata
+  // (highlight colors, etc.) after any edit/save, and a bare <tr> match
+  // would silently skip every such row.
+  const rowRe = /<tr[^>]*>([\s\S]*?)<\/tr>/g;
   let m;
   while ((m = rowRe.exec(oldHtml))) {
+    diag.rowsScanned++;
     const rowHtml = m[1];
     const keyMatch = rowHtml.match(/\/browse\/([A-Z][A-Z0-9]*-\d+)/);
     if (!keyMatch) continue; // header row, or a row without a recognizable ticket link
+    diag.rowsMatchedKey++;
     const key = keyMatch[1];
-    const statusMatch = rowHtml.match(/<ac:task-status>(complete|incomplete)<\/ac:task-status>/);
+    const statusMatch = rowHtml.match(/<ac:task-status>\s*(complete|incomplete)\s*<\/ac:task-status>/);
     const approved = statusMatch ? statusMatch[1] === 'complete' : false;
     const tdMatches = rowHtml.match(/<td[^>]*>[\s\S]*?<\/td>/g) || [];
     const lastTd = tdMatches[tdMatches.length - 1] || '';
@@ -158,9 +164,10 @@ function extractPreviousApprovals(oldHtml) {
       .replace(/&nbsp;/g, ' ')
       .replace(/\s+/g, ' ')
       .trim();
+    if (approved || approvedBy) diag.rowsWithApprovalData++;
     map[key] = { approved, approvedBy };
   }
-  return map;
+  return { map, diag };
 }
 
 function buildSprintTableHtml(team, sprintName, rows, previousApprovals) {
@@ -227,13 +234,16 @@ async function publishSprintPage({ team, sprintName, rows }) {
 
   const existing = await findPageByTitleInSpace(pageTitle);
   let lastPreviousApprovals = {};
+  let lastDiag = { rowsScanned: 0, rowsMatchedKey: 0, rowsWithApprovalData: 0 };
 
   function buildHtml(existingFull) {
-    const previousApprovals = extractPreviousApprovals(
-      existingFull && existingFull.body && existingFull.body.storage && existingFull.body.storage.value
-    );
-    lastPreviousApprovals = previousApprovals;
-    return buildSprintTableHtml(team, sprintName, rows, previousApprovals);
+    const oldBody = existingFull && existingFull.body && existingFull.body.storage && existingFull.body.storage.value;
+    const { map, diag } = extractPreviousApprovals(oldBody);
+    lastPreviousApprovals = map;
+    lastDiag = diag;
+    lastDiag.hadOldBody = !!oldBody;
+    lastDiag.oldBodyLength = oldBody ? oldBody.length : 0;
+    return buildSprintTableHtml(team, sprintName, rows, map);
   }
 
   const { result, wasUpdate } = await createOrUpdatePage(section.id, pageTitle, buildHtml, existing);
@@ -244,7 +254,11 @@ async function publishSprintPage({ team, sprintName, rows }) {
   }).length;
 
   const url = `${CONFLUENCE_BASE}/spaces/${SPACE_KEY}/pages/${result.id}`;
-  return { url, pageId: result.id, sectionTitle: section.title, sectionCreated: section.created, updated: wasUpdate, preservedApprovals: preservedCount };
+  return {
+    url, pageId: result.id, sectionTitle: section.title, sectionCreated: section.created,
+    updated: wasUpdate, preservedApprovals: preservedCount,
+    diag: { existingFoundInitially: !!existing, ...lastDiag },
+  };
 }
 
 exports.handler = async (event) => {

@@ -6800,11 +6800,14 @@ function renderSprintPlanning(){
   }
   if(spState.publishResult){
     var preserved = spState.publishResult.preservedApprovals || 0;
+    var diag = spState.publishResult.diag || {};
     html += '<div style="padding:12px 14px;background:rgba(34,197,94,0.1);border:0.5px solid rgba(34,197,94,0.3);border-radius:8px;color:#4ade80;font-size:12px;margin-bottom:14px">'
       + (spState.publishResult.updated ? 'Updated existing approval page' : 'Created new approval page')
       + (spState.publishResult.updated && preserved>0 ? ' — preserved '+preserved+' existing approval'+(preserved===1?'':'s') : '')
       + (spState.publishResult.sectionCreated ? ' (also created the "'+escHtml(spState.publishResult.sectionTitle)+'" section)' : '')
-      + ' — <a href="'+escHtml(spState.publishResult.url)+'" target="_blank" style="color:#4ade80;text-decoration:underline">Open in Confluence</a></div>';
+      + ' — <a href="'+escHtml(spState.publishResult.url)+'" target="_blank" style="color:#4ade80;text-decoration:underline">Open in Confluence</a>'
+      + (spState.publishResult.updated ? '<br><span style="opacity:0.75;font-family:var(--font-mono);font-size:10px">diag: existing page found='+(diag.existingFoundInitially?'yes':'no')+', old body found='+(diag.hadOldBody?'yes ('+diag.oldBodyLength+' chars)':'no')+', rows scanned='+(diag.rowsScanned||0)+', rows matched to a ticket key='+(diag.rowsMatchedKey||0)+', rows with approval data='+(diag.rowsWithApprovalData||0)+'</span>' : '')
+      + '</div>';
   }
 
   var grid='80px 220px 70px 90px 70px 1fr 120px 120px 90px 130px 70px 2fr';
