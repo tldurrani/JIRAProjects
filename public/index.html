@@ -6569,13 +6569,11 @@ function spTeamOptions(){
 function spSprintOptions(){
   return spState.sprintOptions;
 }
-// The detailed query is already scoped tightly by JQL (sprint + team), so
-// this just needs to sort, not filter.
-// Tickets tagged with a release label (e.g. "release-prod-260327") are
-// already tracked/shipped through a separate release process - excluded by
-// default so they don't clutter the sprint approval doc.
+// A ticket that already has a Fix Version/Release set (shown in the Release
+// column) is already tracked/shipped through a separate release process -
+// excluded by default so it doesn't clutter the sprint approval doc.
 function spIsReleaseTagged(t){
-  return (t.labels||[]).some(function(l){ return /^release-/i.test(l); });
+  return !!(t.releases && t.releases.length);
 }
 
 function spGetFilteredTickets(){
@@ -6834,7 +6832,7 @@ function renderSprintPlanning(){
     });
     html += '</select></div>';
   }
-  html += '<label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text2);cursor:pointer;margin-left:8px;margin-top:16px"><input type="checkbox" onchange="spState.excludeReleaseTagged=this.checked;renderSprintPlanning()"'+(spState.excludeReleaseTagged?' checked':'')+' style="accent-color:var(--blue)"> Exclude release-tagged tickets</label>';
+  html += '<label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text2);cursor:pointer;margin-left:8px;margin-top:16px" title="Excludes tickets that already have a Fix Version/Release set in Jira"><input type="checkbox" onchange="spState.excludeReleaseTagged=this.checked;renderSprintPlanning()"'+(spState.excludeReleaseTagged?' checked':'')+' style="accent-color:var(--blue)"> Exclude tickets with a Release already set</label>';
   html += '</div>';
 
   if(spState.sprintFilter==null){
