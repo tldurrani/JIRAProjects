@@ -6583,6 +6583,30 @@ function spSetSort(col){
   renderSprintPlanning();
 }
 
+function spExportCSV(){
+  var rows = spGetFilteredTickets();
+  if(!rows.length) return;
+  var sprintOpt = spSprintOptions().find(function(s){ return s.id===spState.sprintFilter; });
+  var sprintName = sprintOpt ? sprintOpt.name : ('Sprint'+spState.sprintFilter);
+  var header = ['Key','Project','Type','Severity','Labels','Assignee','Reporter','Created','Flag','Summary'];
+  var csvRows = [header].concat(rows.map(function(t){
+    return [
+      t.key, t.project, t.type, t.severity||'',
+      (t.labels||[]).join(', '), t.assignee, t.reporter,
+      spFmtDate(t.created), t.flagged?'Flagged':'',
+      spState.summaries[t.key] || t.summary,
+    ];
+  }));
+  var csv = csvRows.map(function(r){ return r.map(bugsCsvEscape).join(','); }).join('\r\n');
+  var blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a');
+  a.href = url;
+  a.download = 'sprint-'+sprintName.replace(/[^a-z0-9]+/gi,'-')+'-'+(spState.teamFilter!=='all'?spState.teamFilter.replace(/[^a-z0-9]+/gi,'-')+'-':'')+new Date().toISOString().slice(0,10)+'.csv';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 function spStripHtml(html){
   return String(html||'').replace(/<[^>]*>/g,' ').replace(/&nbsp;/g,' ').replace(/\s+/g,' ').trim();
 }
@@ -6733,7 +6757,9 @@ function renderSprintPlanning(){
   // Action row
   html += '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:14px">';
   html += '<span style="font-size:12px;color:var(--text3)">'+rows.length+' ticket'+(rows.length===1?'':'s')+' in '+escHtml(sprintLabel)+'</span>';
-  html += '<button class="btn btn-ghost btn-sm" onclick="spGenerateSummaries()" style="margin-left:auto"'+(spState.summarizing?' disabled':'')+'>'+(spState.summarizing?'&#8635; Generating…':'&#10022; Generate AI Summaries')+'</button>';
+  html += '<button onclick="spLoadSprintTickets()" style="margin-left:auto;font-size:11px;padding:5px 10px;border-radius:6px;border:0.5px solid var(--border2);background:transparent;color:var(--text2);cursor:pointer">&#8635; Refresh sprint items</button>';
+  html += '<button class="btn btn-ghost btn-sm" onclick="spExportCSV()">&#8681; Export CSV</button>';
+  html += '<button class="btn btn-ghost btn-sm" onclick="spGenerateSummaries()"'+(spState.summarizing?' disabled':'')+'>'+(spState.summarizing?'&#8635; Generating…':'&#10022; Generate AI Summaries')+'</button>';
   html += '<button class="btn btn-sm" onclick="spPublish()"'+(spState.publishing?' disabled':'')+'>'+(spState.publishing?'&#8635; Publishing…':'&#128228; Publish to Confluence')+'</button>';
   html += '</div>';
 
