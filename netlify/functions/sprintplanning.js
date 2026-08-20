@@ -86,19 +86,31 @@ async function updatePage(pageId, currentVersion, title, htmlBody) {
 // Creates the page, but if Confluence rejects it because a page with that
 // title already exists (a race, or our lookup missing it for any reason),
 // self-heal by looking it up again and updating instead of failing.
-async function createOrUpdatePage(parentId, title, htmlBody, knownExisting) {
+//
+// buildHtml is a function, not a pre-built string: (existingFullPageOrNull) => html.
+// This matters because whichever page we end up updating - found via the
+// caller's own lookup, or via the self-heal fallback below - needs its HTML
+// built from THAT page's real current body, not from an earlier lookup that
+// may have failed to find it. Building the HTML too early, before knowing
+// which page (if any) will actually be updated, was exactly the bug that
+// caused approval checkboxes/names to get silently wiped whenever the
+// self-heal path fired.
+async function createOrUpdatePage(parentId, title, buildHtml, knownExisting) {
   let existing = knownExisting;
   if (!existing) {
     try {
-      return { result: await createPage(parentId, title, htmlBody), wasUpdate: false };
+      return { result: await createPage(parentId, title, buildHtml(null)), wasUpdate: false };
     } catch (e) {
       if (!/already exists/i.test(e.message)) throw e;
       existing = await findPageByTitleInSpace(title);
       if (!existing) throw e; // genuinely something else went wrong
     }
   }
-  const full = existing.version ? existing : await confluenceFetch(`/rest/api/content/${existing.id}?expand=version`);
-  const result = await updatePage(existing.id, full.version.number, title, htmlBody);
+  // Always fetch the full current body+version for whichever page we ended
+  // up with - never reuse a partial/stale `existing` object here.
+  const full = await confluenceFetch(`/rest/api/content/${existing.id}?expand=body.storage,version`);
+  const html = buildHtml(full);
+  const result = await updatePage(existing.id, full.version.number, title, html);
   return { result, wasUpdate: true };
 }
 
@@ -109,7 +121,7 @@ async function findOrCreateSection(team) {
   const { result } = await createOrUpdatePage(
     FOLDER_ID,
     title,
-    `<p>Sprint approval pages for the ${escapeHtml(team)} team live here. Each sprint gets its own page, created automatically from the Sprint Planning tab.</p>`,
+    () => `<p>Sprint approval pages for the ${escapeHtml(team)} team live here. Each sprint gets its own page, created automatically from the Sprint Planning tab.</p>`,
     null
   );
   return { id: result.id, title, created: true };
@@ -173,7 +185,7 @@ function buildSprintTableHtml(team, sprintName, rows, previousApprovals) {
       <td>${escapeHtml(r.release || '\u2014')}</td>
       <td>${flagHtml}</td>
       <td>${escapeHtml(r.summary || '')}</td>
-      <td><ac:task-list><ac:task><ac:task-id>${taskId}</ac:task-id><ac:task-status>${taskStatus}</ac:task-status><ac:task-body>Approved</ac:task-body></ac:task></ac:task-list></td>
+      <td><ac:task-list><ac:task><ac:task-id>${taskId}</ac:task-id><ac:task-status>${taskStatus}</ac:task-status><ac:task-body>&nbsp;</ac:task-body></ac:task></ac:task-list></td>
       <td>${approvedByCell}</td>
     </tr>`;
   }).join('\n');
@@ -192,7 +204,7 @@ function buildSprintTableHtml(team, sprintName, rows, previousApprovals) {
   // attribute Confluence's editor sets when you choose the "Full width"
   // table option, so this renders across the whole page instead of
   // Confluence's default constrained/centered width.
-  const colWidths = [90, 220, 70, 80, 140, 120, 120, 100, 130, 70, 280, 100, 150];
+  const colWidths = [90, 220, 70, 80, 140, 120, 120, 100, 130, 70, 280, 90, 150];
   const colgroup = `<colgroup>${colWidths.map(w => `<col style="width: ${w}.0px;" />`).join('')}</colgroup>`;
 
   return `<h1>${escapeHtml(sprintName)} \u2014 ${escapeHtml(team)} \u2014 Sprint Approval</h1>
@@ -213,19 +225,21 @@ async function publishSprintPage({ team, sprintName, rows }) {
   const section = await findOrCreateSection(team);
   const pageTitle = `${sprintName} \u2014 ${team} \u2014 Sprint Approval`;
 
-  let existing = await findPageByTitleInSpace(pageTitle);
-  let previousApprovals = {};
-  if (existing) {
-    const full = await confluenceFetch(`/rest/api/content/${existing.id}?expand=body.storage,version`);
-    previousApprovals = extractPreviousApprovals(full.body && full.body.storage && full.body.storage.value);
-    existing = full; // carry the version forward so createOrUpdatePage doesn't need to re-fetch it
+  const existing = await findPageByTitleInSpace(pageTitle);
+  let lastPreviousApprovals = {};
+
+  function buildHtml(existingFull) {
+    const previousApprovals = extractPreviousApprovals(
+      existingFull && existingFull.body && existingFull.body.storage && existingFull.body.storage.value
+    );
+    lastPreviousApprovals = previousApprovals;
+    return buildSprintTableHtml(team, sprintName, rows, previousApprovals);
   }
 
-  const html = buildSprintTableHtml(team, sprintName, rows, previousApprovals);
-  const { result, wasUpdate } = await createOrUpdatePage(section.id, pageTitle, html, existing);
+  const { result, wasUpdate } = await createOrUpdatePage(section.id, pageTitle, buildHtml, existing);
 
   const preservedCount = rows.filter(r => {
-    const p = previousApprovals[r.key];
+    const p = lastPreviousApprovals[r.key];
     return p && (p.approved || p.approvedBy);
   }).length;
 
