@@ -6292,6 +6292,7 @@ var spState = {
 
   sprintFilter: null,     // selected sprint id, or null = none picked yet
   sort: { col:'key', dir:'asc' },
+  excludeReleaseTagged: true,  // hide tickets with a release-* label by default
 
   tickets: [],            // full detail - only ever holds the currently selected sprint's tickets
   loading: false,
@@ -6302,6 +6303,8 @@ var spState = {
   publishing: false,
   publishResult: null,
   publishError: null,
+
+  combinedSets: [],       // [{team, sprintName, tickets:[...snapshot]}] - queued sets for a multi-team combined publish
 };
 var SP_TYPE_STYLE = { 'Bug':'rn-itype-bug', 'Story':'rn-itype-story', 'Task':'rn-itype-task', 'Spike':'rn-itype-spike', 'Sub-task':'rn-itype-subtask', 'Subtask':'rn-itype-subtask' };
 
@@ -6483,7 +6486,7 @@ async function spLoadSprintTickets(){
     var clauses = ['sprint = '+spState.sprintFilter];
     if(spState.teamFilter!=='all') clauses.push('cf[10039] = "'+spState.teamFilter.replace(/"/g,'\\"')+'"');
     var jql = clauses.join(' AND ') + ' ORDER BY created DESC';
-    var fieldList = ['summary','description','issuetype','status','customfield_10040','customfield_10039','labels','assignee','reporter','created','fixVersions',spState.sprintFieldId];
+    var fieldList = ['summary','description','issuetype','status','customfield_10040','customfield_10039','labels','assignee','reporter','created','fixVersions','parent',spState.sprintFieldId];
     if(spState.flaggedFieldId) fieldList.push(spState.flaggedFieldId);
     var fields = fieldList.join(',');
     var all=[], startAt=0, pageSize=100, guard=0, nextPageToken=null;
@@ -6508,6 +6511,8 @@ async function spLoadSprintTickets(){
       var flagged = Array.isArray(flaggedRaw) ? flaggedRaw.length>0 : !!flaggedRaw;
       var descHtml = (i.renderedFields && i.renderedFields.description) || '';
       var releases = (f.fixVersions||[]).map(function(v){ return { name:v.name, releaseDate:v.releaseDate||null, released:!!v.released }; });
+      var epicKey = (f.parent && f.parent.key) || '';
+      var epicName = (f.parent && f.parent.fields && f.parent.fields.summary) || '';
       return {
         key: i.key,
         project: i.key.split('-')[0],
@@ -6523,6 +6528,8 @@ async function spLoadSprintTickets(){
         flagged: flagged,
         sprints: sprints,
         releases: releases,
+        epicKey: epicKey,
+        epicName: epicName,
         summary: (f.summary||'').trim(),
         descHtml: descHtml,
       };
@@ -6564,8 +6571,16 @@ function spSprintOptions(){
 }
 // The detailed query is already scoped tightly by JQL (sprint + team), so
 // this just needs to sort, not filter.
+// Tickets tagged with a release label (e.g. "release-prod-260327") are
+// already tracked/shipped through a separate release process - excluded by
+// default so they don't clutter the sprint approval doc.
+function spIsReleaseTagged(t){
+  return (t.labels||[]).some(function(l){ return /^release-/i.test(l); });
+}
+
 function spGetFilteredTickets(){
   var rows = spState.tickets.slice();
+  if(spState.excludeReleaseTagged) rows = rows.filter(function(t){ return !spIsReleaseTagged(t); });
   var col = spState.sort.col, dir = spState.sort.dir;
   rows.sort(function(a,b){
     var av, bv;
@@ -6595,10 +6610,10 @@ function spExportCSV(){
   if(!rows.length) return;
   var sprintOpt = spSprintOptions().find(function(s){ return s.id===spState.sprintFilter; });
   var sprintName = sprintOpt ? sprintOpt.name : ('Sprint'+spState.sprintFilter);
-  var header = ['Key','Name','Project','Type','Severity','Labels','Assignee','Reporter','Created','Release','Flag','Summary'];
+  var header = ['Key','Name','Epic Key','Epic Name','Project','Type','Severity','Labels','Assignee','Reporter','Created','Release','Flag','Summary'];
   var csvRows = [header].concat(rows.map(function(t){
     return [
-      t.key, t.summary, t.project, t.type, t.severity||'',
+      t.key, t.summary, t.epicKey||'', t.epicName||'', t.project, t.type, t.severity||'',
       (t.labels||[]).join(', '), t.assignee, t.reporter,
       spFmtDate(t.created), spFmtRelease(t.releases), t.flagged?'Flagged':'',
       spState.summaries[t.key] || '',
@@ -6649,6 +6664,19 @@ async function spGenerateSummaries(){
   renderSprintPlanning();
 }
 
+function spBuildPayloadRows(rows, team, sprintName){
+  return rows.map(function(t){
+    return {
+      key:t.key, name:t.summary, team:team, sprintName:sprintName,
+      epicKey:t.epicKey||'', epicName:t.epicName||'',
+      type:t.type, severity:t.severity, labels:t.labels,
+      assignee:t.assignee, reporter:t.reporter, created:t.created,
+      release: spFmtRelease(t.releases),
+      flagged:t.flagged, summary: spState.summaries[t.key] || '',
+    };
+  });
+}
+
 async function spPublish(){
   var rows = spGetFilteredTickets();
   if(!rows.length) return;
@@ -6666,17 +6694,61 @@ async function spPublish(){
   renderSprintPlanning();
 
   try {
-    var payloadRows = rows.map(function(t){
-      return {
-        key:t.key, name:t.summary, type:t.type, severity:t.severity, labels:t.labels,
-        assignee:t.assignee, reporter:t.reporter, created:t.created,
-        release: spFmtRelease(t.releases),
-        flagged:t.flagged, summary: spState.summaries[t.key] || '',
-      };
-    });
+    var payloadRows = spBuildPayloadRows(rows, spState.teamFilter, sprintName);
     var res = await fetch('/api/sprintplanning', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ team: spState.teamFilter, sprintName: sprintName, rows: payloadRows }),
+      body: JSON.stringify({ rows: payloadRows }),
+    });
+    if(!res.ok){ var errText=await res.text(); throw new Error('Server error '+res.status+': '+errText.slice(0,300)); }
+    var data = await res.json();
+    if(data.error) throw new Error(data.error);
+    spState.publishResult = data;
+  } catch(e) {
+    spState.publishError = e.message;
+  }
+  spState.publishing = false;
+  renderSprintPlanning();
+}
+
+// Combined multi-team publishing: queue up the currently-loaded team+sprint
+// as a "set", repeat for other teams/sprints, then publish everything
+// together as one Confluence page. Re-adding the same team+sprint replaces
+// its entry rather than duplicating it.
+function spAddToCombinedSet(){
+  var rows = spGetFilteredTickets();
+  if(!rows.length) return;
+  if(spState.teamFilter==='all'){
+    spState.publishError = 'Pick a specific team before adding it to a combined set.';
+    renderSprintPlanning();
+    return;
+  }
+  var sprintOpt = spSprintOptions().find(function(s){ return s.id===spState.sprintFilter; });
+  var sprintName = sprintOpt ? sprintOpt.name : ('Sprint '+spState.sprintFilter);
+  var team = spState.teamFilter;
+  var entry = { team:team, sprintName:sprintName, rows: spBuildPayloadRows(rows, team, sprintName) };
+  var dupeIdx = spState.combinedSets.findIndex(function(s){ return s.team===team && s.sprintName===sprintName; });
+  if(dupeIdx>=0) spState.combinedSets[dupeIdx] = entry;
+  else spState.combinedSets.push(entry);
+  spState.publishError = null;
+  renderSprintPlanning();
+}
+function spRemoveCombinedSet(idx){
+  spState.combinedSets.splice(parseInt(idx,10),1);
+  renderSprintPlanning();
+}
+async function spPublishCombined(){
+  if(!spState.combinedSets.length) return;
+  spState.publishing = true;
+  spState.publishError = null;
+  spState.publishResult = null;
+  renderSprintPlanning();
+
+  try {
+    var allRows = [];
+    spState.combinedSets.forEach(function(s){ allRows = allRows.concat(s.rows); });
+    var res = await fetch('/api/sprintplanning', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ rows: allRows }),
     });
     if(!res.ok){ var errText=await res.text(); throw new Error('Server error '+res.status+': '+errText.slice(0,300)); }
     var data = await res.json();
@@ -6762,6 +6834,7 @@ function renderSprintPlanning(){
     });
     html += '</select></div>';
   }
+  html += '<label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text2);cursor:pointer;margin-left:8px;margin-top:16px"><input type="checkbox" onchange="spState.excludeReleaseTagged=this.checked;renderSprintPlanning()"'+(spState.excludeReleaseTagged?' checked':'')+' style="accent-color:var(--blue)"> Exclude release-tagged tickets</label>';
   html += '</div>';
 
   if(spState.sprintFilter==null){
@@ -6792,8 +6865,23 @@ function renderSprintPlanning(){
   html += '<button onclick="spLoadSprintTickets()" style="margin-left:auto;font-size:11px;padding:5px 10px;border-radius:6px;border:0.5px solid var(--border2);background:transparent;color:var(--text2);cursor:pointer">&#8635; Refresh sprint items</button>';
   html += '<button class="btn btn-ghost btn-sm" onclick="spExportCSV()">&#8681; Export CSV</button>';
   html += '<button class="btn btn-ghost btn-sm" onclick="spGenerateSummaries()"'+(spState.summarizing?' disabled':'')+'>'+(spState.summarizing?'&#8635; Generating…':'&#10022; Generate AI Summaries')+'</button>';
+  html += '<button class="btn btn-ghost btn-sm" onclick="spAddToCombinedSet()">&#10133; Add to Combined Set</button>';
   html += '<button class="btn btn-sm" onclick="spPublish()"'+(spState.publishing?' disabled':'')+'>'+(spState.publishing?'&#8635; Publishing…':'&#128228; Publish to Confluence')+'</button>';
   html += '</div>';
+
+  if(spState.combinedSets.length){
+    html += '<div style="border:0.5px solid var(--border2);border-radius:8px;padding:10px 14px;margin-bottom:14px;background:var(--bg2)">';
+    html += '<div style="font-size:10px;color:var(--text3);text-transform:uppercase;font-family:var(--font-mono);margin-bottom:8px">Combined Set — will publish as one page</div>';
+    html += '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">';
+    spState.combinedSets.forEach(function(s,idx){
+      html += '<span style="display:inline-flex;align-items:center;gap:6px;font-size:12px;padding:4px 6px 4px 10px;border-radius:14px;background:var(--bg3);border:0.5px solid var(--border2);color:var(--text)">'
+        + escHtml(s.team)+' — '+escHtml(s.sprintName)+' ('+s.rows.length+')'
+        + '<span data-rm-set="'+idx+'" onclick="spRemoveCombinedSet(this.dataset.rmSet)" style="cursor:pointer;color:var(--text3);font-weight:700;padding:0 3px" title="Remove">&times;</span></span>';
+    });
+    html += '</div>';
+    html += '<button class="btn btn-sm" onclick="spPublishCombined()"'+(spState.publishing?' disabled':'')+'>'+(spState.publishing?'&#8635; Publishing…':'&#128228; Publish Combined Page ('+spState.combinedSets.length+' teams/sprints)')+'</button>';
+    html += '</div>';
+  }
 
   if(spState.publishError){
     html += '<div style="padding:12px 14px;background:rgba(239,68,68,0.1);border:0.5px solid rgba(239,68,68,0.3);border-radius:8px;color:#f87171;font-size:12px;margin-bottom:14px">'+escHtml(spState.publishError)+'</div>';
@@ -6810,10 +6898,10 @@ function renderSprintPlanning(){
       + '</div>';
   }
 
-  var grid='80px 220px 70px 90px 70px 1fr 120px 120px 90px 130px 70px 2fr';
+  var grid='80px 220px 160px 70px 90px 70px 1fr 120px 120px 90px 130px 70px 2fr';
   html += '<div style="background:var(--bg2);border:0.5px solid var(--border);border-radius:12px;overflow:hidden">';
   html += '<div style="display:grid;grid-template-columns:'+grid+';gap:10px;padding:9px 14px;background:var(--bg3);border-bottom:0.5px solid var(--border)">';
-  [['key','Key'],['summary','Name'],['project','Project'],['type','Type'],['severity','Severity'],['labels','Labels'],['assignee','Assignee'],['reporter','Reporter'],['created','Created'],['release','Release'],['flagged','Flag'],[null,'Summary']].forEach(function(c){
+  [['key','Key'],['summary','Name'],['epicKey','Epic'],['project','Project'],['type','Type'],['severity','Severity'],['labels','Labels'],['assignee','Assignee'],['reporter','Reporter'],['created','Created'],['release','Release'],['flagged','Flag'],[null,'Summary']].forEach(function(c){
     var arrow = c[0]===null ? '' : (spState.sort.col!==c[0] ? '<span style="opacity:0.3"> &#8597;</span>' : '<span> '+(spState.sort.dir==='asc'?'&#8593;':'&#8595;')+'</span>');
     var cursor = c[0]===null ? '' : 'cursor:pointer;user-select:none;';
     var onclick = c[0]===null ? '' : ' onclick="spSetSort(\''+c[0]+'\')"';
@@ -6830,9 +6918,13 @@ function renderSprintPlanning(){
       var labelsHtml = (t.labels&&t.labels.length) ? t.labels.map(function(l){ return '<span class="rn-label">'+escHtml(l)+'</span>'; }).join('') : '<span style="color:var(--text3);font-size:11px">—</span>';
       var summaryText = spState.summaries[t.key] || '<span style="color:var(--text3)">Not generated yet</span>';
       var releaseText = spFmtRelease(t.releases);
+      var epicHtml = t.epicKey
+        ? '<a href="https://riversidejira.atlassian.net/browse/'+escHtml(t.epicKey)+'" target="_blank" style="font-size:11px;color:var(--blue);text-decoration:none" title="'+escHtml(t.epicName)+'">'+escHtml(t.epicKey)+(t.epicName?' — '+escHtml(t.epicName):'')+'</a>'
+        : '<span style="color:var(--text3);font-size:11px">—</span>';
       html += '<div style="display:grid;grid-template-columns:'+grid+';gap:10px;padding:8px 14px;border-bottom:0.5px solid rgba(255,255,255,0.04);align-items:center">'
         + '<a href="https://riversidejira.atlassian.net/browse/'+escHtml(t.key)+'" target="_blank" style="font-family:var(--font-mono);font-size:11px;color:var(--blue);text-decoration:none">'+escHtml(t.key)+'</a>'
         + '<span style="font-size:12px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+escHtml(t.summary)+'">'+escHtml(t.summary)+'</span>'
+        + '<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+epicHtml+'</span>'
         + '<span style="font-size:11px;color:var(--text3);font-family:var(--font-mono)">'+escHtml(t.project)+'</span>'
         + '<span><span class="rn-itype '+typeClass+'" style="font-size:9px;padding:2px 6px;border-radius:6px">'+escHtml(t.type)+'</span></span>'
         + '<span>'+(sevColor?('<span style="font-size:10px;padding:2px 7px;border-radius:8px;font-weight:600;font-family:var(--font-mono);background:'+sevColor+'22;color:'+sevColor+'">'+escHtml(t.severity)+'</span>'):'<span style="color:var(--text3);font-size:11px">—</span>')+'</span>'

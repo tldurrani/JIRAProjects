@@ -114,17 +114,47 @@ async function createOrUpdatePage(parentId, title, buildHtml, knownExisting) {
   return { result, wasUpdate: true };
 }
 
-async function findOrCreateSection(team) {
-  const title = sectionTitleForTeam(team);
+async function findOrCreateSectionByTitle(title, placeholderHtml) {
   const existing = await findPageByTitleInSpace(title);
   if (existing) return { id: existing.id, title, created: false };
-  const { result } = await createOrUpdatePage(
-    FOLDER_ID,
-    title,
-    () => `<p>Sprint approval pages for the ${escapeHtml(team)} team live here. Each sprint gets its own page, created automatically from the Sprint Planning tab.</p>`,
-    null
-  );
+  const { result } = await createOrUpdatePage(FOLDER_ID, title, () => placeholderHtml, null);
   return { id: result.id, title, created: true };
+}
+
+const COMBINED_SECTION_TITLE = 'Sprint Planning \u2014 Combined';
+
+// Figures out which team(s)+sprint(s) a set of rows actually spans - drives
+// the page title, the H1/subtitle, whether Team/Sprint need their own
+// columns, and which section (per-team, or the shared Combined section) the
+// page lives under. Shared by buildSprintTableHtml and publishSprintPage so
+// they can never disagree with each other.
+function deriveDocMeta(rows) {
+  const pairKey = r => `${r.team || 'Unassigned'}|||${r.sprintName || 'Unknown Sprint'}`;
+  const pairs = [];
+  const seen = new Set();
+  rows.forEach(r => {
+    const k = pairKey(r);
+    if (!seen.has(k)) { seen.add(k); pairs.push({ team: r.team || 'Unassigned', sprintName: r.sprintName || 'Unknown Sprint' }); }
+  });
+  const isCombined = pairs.length > 1;
+  const title = isCombined
+    ? `${pairs.map(p => `${p.team} ${p.sprintName}`).join(' + ')} \u2014 Combined Sprint Approval`
+    : `${pairs[0].sprintName} \u2014 ${pairs[0].team} \u2014 Sprint Approval`;
+  return { pairs, isCombined, title };
+}
+
+async function findOrCreateSection(meta) {
+  if (!meta.isCombined) {
+    const team = meta.pairs[0].team;
+    return findOrCreateSectionByTitle(
+      sectionTitleForTeam(team),
+      `<p>Sprint approval pages for the ${escapeHtml(team)} team live here. Each sprint gets its own page, created automatically from the Sprint Planning tab.</p>`
+    );
+  }
+  return findOrCreateSectionByTitle(
+    COMBINED_SECTION_TITLE,
+    `<p>Sprint approval pages spanning more than one team live here, created automatically from the Sprint Planning tab.</p>`
+  );
 }
 
 function fmtDate(iso) {
@@ -170,9 +200,14 @@ function extractPreviousApprovals(oldHtml) {
   return { map, diag };
 }
 
-function buildSprintTableHtml(team, sprintName, rows, previousApprovals) {
+function buildSprintTableHtml(rows, previousApprovals) {
   previousApprovals = previousApprovals || {};
   const generated = new Date().toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' });
+
+  const meta = deriveDocMeta(rows);
+  const pairs = meta.pairs;
+  const isCombined = meta.isCombined;
+
   const rowsHtml = rows.map((r, idx) => {
     const taskId = idx + 1;
     const labelsText = Array.isArray(r.labels) && r.labels.length ? r.labels.map(escapeHtml).join(', ') : '\u2014';
@@ -180,9 +215,17 @@ function buildSprintTableHtml(team, sprintName, rows, previousApprovals) {
     const prev = previousApprovals[r.key];
     const taskStatus = prev && prev.approved ? 'complete' : 'incomplete';
     const approvedByCell = prev && prev.approvedBy ? escapeHtml(prev.approvedBy) : '&nbsp;';
+    const epicCell = r.epicKey
+      ? `<a href="${JIRA_BASE}/browse/${escapeHtml(r.epicKey)}">${escapeHtml(r.epicKey)}${r.epicName ? ' \u2014 ' + escapeHtml(r.epicName) : ''}</a>`
+      : '\u2014';
+    const teamSprintCells = isCombined
+      ? `<td>${escapeHtml(r.team || '\u2014')}</td><td>${escapeHtml(r.sprintName || '\u2014')}</td>`
+      : '';
     return `<tr>
       <td><a href="${JIRA_BASE}/browse/${escapeHtml(r.key)}">${escapeHtml(r.key)}</a></td>
       <td>${escapeHtml(r.name || '')}</td>
+      ${teamSprintCells}
+      <td>${epicCell}</td>
       <td>${escapeHtml(r.type)}</td>
       <td>${escapeHtml(r.severity || '\u2014')}</td>
       <td>${labelsText}</td>
@@ -205,32 +248,48 @@ function buildSprintTableHtml(team, sprintName, rows, previousApprovals) {
     ? `<p><strong>Target Release:</strong> ${escapeHtml(distinctReleases[0])}</p>`
     : '';
 
-  // Column widths, in px - Name/Summary/Approved By get the most room since
-  // they hold prose/free text; everything else is a short fixed value so it
-  // doesn't need to wrap at all. data-layout="full-width" is the same
+  const title = meta.title;
+
+  // When combined, spell out exactly which teams/sprints are included so
+  // it's unambiguous at a glance which rows belong to which team.
+  const includedNote = isCombined
+    ? `<p><strong>Included:</strong> ${pairs.map(p => `${escapeHtml(p.team)} \u2014 ${escapeHtml(p.sprintName)}`).join(' &nbsp;|&nbsp; ')}</p>`
+    : '';
+
+  const headerCols = isCombined
+    ? '<th>Ticket</th><th>Name</th><th>Team</th><th>Sprint</th><th>Epic</th><th>Type</th><th>Severity</th><th>Labels</th><th>Assignee</th><th>Reporter</th><th>Created</th><th>Release</th><th>Flag</th><th>Summary</th><th>Approved</th><th>Approved By</th>'
+    : '<th>Ticket</th><th>Name</th><th>Epic</th><th>Type</th><th>Severity</th><th>Labels</th><th>Assignee</th><th>Reporter</th><th>Created</th><th>Release</th><th>Flag</th><th>Summary</th><th>Approved</th><th>Approved By</th>';
+
+  // Column widths, in px - Name/Epic/Summary/Approved By get the most room
+  // since they hold prose/free text; everything else is a short fixed value
+  // so it doesn't need to wrap at all. data-layout="full-width" is the same
   // attribute Confluence's editor sets when you choose the "Full width"
   // table option, so this renders across the whole page instead of
   // Confluence's default constrained/centered width.
-  const colWidths = [90, 220, 70, 80, 140, 120, 120, 100, 130, 70, 280, 90, 150];
+  const colWidths = isCombined
+    ? [90, 200, 100, 130, 190, 70, 80, 130, 110, 110, 100, 120, 70, 260, 90, 140]
+    : [90, 220, 190, 70, 80, 140, 120, 120, 100, 130, 70, 280, 90, 150];
   const colgroup = `<colgroup>${colWidths.map(w => `<col style="width: ${w}.0px;" />`).join('')}</colgroup>`;
 
-  return `<h1>${escapeHtml(sprintName)} \u2014 ${escapeHtml(team)} \u2014 Sprint Approval</h1>
+  return `<h1>${escapeHtml(title)}</h1>
 <p>Generated ${generated} from the Sprint Planning tab. Review each ticket below, check the box once approved, and add your name in the "Approved By" column.</p>
+${includedNote}
 ${releaseNote}
 <table data-layout="full-width">
   ${colgroup}
   <tbody>
     <tr>
-      <th>Ticket</th><th>Name</th><th>Type</th><th>Severity</th><th>Labels</th><th>Assignee</th><th>Reporter</th><th>Created</th><th>Release</th><th>Flag</th><th>Summary</th><th>Approved</th><th>Approved By</th>
+      ${headerCols}
     </tr>
     ${rowsHtml}
   </tbody>
 </table>`;
 }
 
-async function publishSprintPage({ team, sprintName, rows }) {
-  const section = await findOrCreateSection(team);
-  const pageTitle = `${sprintName} \u2014 ${team} \u2014 Sprint Approval`;
+async function publishSprintPage({ rows }) {
+  const meta = deriveDocMeta(rows);
+  const section = await findOrCreateSection(meta);
+  const pageTitle = meta.title;
 
   const existing = await findPageByTitleInSpace(pageTitle);
   let lastPreviousApprovals = {};
@@ -243,7 +302,7 @@ async function publishSprintPage({ team, sprintName, rows }) {
     lastDiag = diag;
     lastDiag.hadOldBody = !!oldBody;
     lastDiag.oldBodyLength = oldBody ? oldBody.length : 0;
-    return buildSprintTableHtml(team, sprintName, rows, map);
+    return buildSprintTableHtml(rows, map);
   }
 
   const { result, wasUpdate } = await createOrUpdatePage(section.id, pageTitle, buildHtml, existing);
@@ -256,7 +315,7 @@ async function publishSprintPage({ team, sprintName, rows }) {
   const url = `${CONFLUENCE_BASE}/spaces/${SPACE_KEY}/pages/${result.id}`;
   return {
     url, pageId: result.id, sectionTitle: section.title, sectionCreated: section.created,
-    updated: wasUpdate, preservedApprovals: preservedCount,
+    updated: wasUpdate, preservedApprovals: preservedCount, combined: meta.isCombined,
     diag: { existingFoundInitially: !!existing, ...lastDiag },
   };
 }
@@ -269,13 +328,13 @@ exports.handler = async (event) => {
   try { body = JSON.parse(event.body || '{}'); }
   catch (e) { return { statusCode: 400, headers: CORS, body: JSON.stringify({ error: 'Invalid JSON body' }) }; }
 
-  const { team, sprintName, rows } = body;
-  if (!team || !sprintName || !Array.isArray(rows) || !rows.length) {
-    return { statusCode: 400, headers: CORS, body: JSON.stringify({ error: 'Missing team, sprintName, or rows' }) };
+  const { rows } = body;
+  if (!Array.isArray(rows) || !rows.length) {
+    return { statusCode: 400, headers: CORS, body: JSON.stringify({ error: 'Missing rows' }) };
   }
 
   try {
-    const result = await publishSprintPage({ team, sprintName, rows });
+    const result = await publishSprintPage({ rows });
     return { statusCode: 200, headers: CORS, body: JSON.stringify({ success: true, ...result }) };
   } catch (e) {
     console.error('sprintplanning publish error:', e);
