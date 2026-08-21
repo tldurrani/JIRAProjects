@@ -6283,18 +6283,18 @@ var spState = {
   teamsError: null,
   teamOptions: [],        // distinct team names - cheap scan, team names repeat often so this is fast
 
-  teamFilter: 'all',
+  selectedTeams: [],      // multi-select: array of team names
 
-  sprintsLoaded: false,   // has a sprint-scan completed for the CURRENT teamFilter
+  sprintsLoaded: false,   // has a sprint-scan completed for the CURRENT selectedTeams
   sprintsLoading: false,
   sprintsError: null,
-  sprintOptions: [],      // sprints found for the currently selected team (deep, team-scoped scan)
+  sprintOptions: [],      // sprints found across the union of selectedTeams (deep, team-scoped scan)
 
-  sprintFilter: null,     // selected sprint id, or null = none picked yet
+  selectedSprintIds: [],  // multi-select: array of sprint ids
   sort: { col:'key', dir:'asc' },
-  excludeReleaseTagged: true,  // hide tickets with a release-* label by default
+  excludeReleaseTagged: true,  // hide tickets that already have a Fix Version/Release set, by default
 
-  tickets: [],            // full detail - only ever holds the currently selected sprint's tickets
+  tickets: [],            // full detail - holds tickets across every selected team+sprint combination
   loading: false,
   loaded: false,
   loadError: null,
@@ -6303,8 +6303,6 @@ var spState = {
   publishing: false,
   publishResult: null,
   publishError: null,
-
-  combinedSets: [],       // [{team, sprintName, tickets:[...snapshot]}] - queued sets for a multi-team combined publish
 };
 var SP_TYPE_STYLE = { 'Bug':'rn-itype-bug', 'Story':'rn-itype-story', 'Task':'rn-itype-task', 'Spike':'rn-itype-spike', 'Sub-task':'rn-itype-subtask', 'Subtask':'rn-itype-subtask' };
 
@@ -6407,24 +6405,30 @@ async function spLoadTeamNames(){
   spState.teamsLoaded = true;
   spState.teamsLoading = false;
   renderSprintPlanning();
-  spLoadSprintsForTeam();
 }
 
-// Team-scoped deep scan for sprints. Scoping by team in the JQL itself
-// (rather than scanning everything and filtering client-side) means this
-// can dig as far back as it needs into THAT team's history without being
-// diluted by other teams' more recent ticket activity - which was exactly
-// why the old global scan only ever surfaced 2-3 sprints for some teams.
-async function spLoadSprintsForTeam(){
+// Team-scoped deep scan for sprints, across the union of every currently
+// selected team. Scoping by team in the JQL itself (rather than scanning
+// everything and filtering client-side) means this can dig as far back as
+// it needs into those teams' history without being diluted by unrelated
+// teams' more recent ticket activity.
+async function spLoadSprintsForTeams(){
   if(spState.sprintsLoading) return;
   spState.sprintsLoading = true;
   spState.sprintsError = null;
   renderSprintPlanning();
 
+  if(!spState.selectedTeams.length){
+    spState.sprintOptions = [];
+    spState.sprintsLoaded = true;
+    spState.sprintsLoading = false;
+    renderSprintPlanning();
+    return;
+  }
+
   try {
-    var clauses = ['sprint is not EMPTY'];
-    if(spState.teamFilter!=='all') clauses.push('cf[10039] = "'+spState.teamFilter.replace(/"/g,'\\"')+'"');
-    var jql = clauses.join(' AND ') + ' ORDER BY created DESC';
+    var teamClause = spState.selectedTeams.map(function(t){ return '"'+t.replace(/"/g,'\\"')+'"'; }).join(',');
+    var jql = 'sprint is not EMPTY AND cf[10039] in ('+teamClause+') ORDER BY created DESC';
     var all=[], startAt=0, pageSize=100, guard=0, nextPageToken=null;
     var seenSprintIds={};
     while(guard<30){
@@ -6462,8 +6466,13 @@ async function spLoadSprintsForTeam(){
       return (new Date(b.startDate||0)) - (new Date(a.startDate||0));
     });
     spState.sprintOptions = list;
+    // Drop any previously-selected sprint ids that no longer exist in the
+    // fresh pool (e.g. after removing a team that was the only one with it).
+    spState.selectedSprintIds = spState.selectedSprintIds.filter(function(id){
+      return list.some(function(s){ return s.id===id; });
+    });
   } catch(e) {
-    console.error('spLoadSprintsForTeam:', e);
+    console.error('spLoadSprintsForTeams:', e);
     spState.sprintsError = e.message;
     spState.sprintOptions = [];
   }
@@ -6476,6 +6485,9 @@ async function spLoadSprintsForTeam(){
 // picked, and the JQL itself is scoped tightly to that sprint (+ team, if
 // one is selected), so it only ever fetches what's actually going to be
 // shown/published, not a broad pool filtered client-side.
+// The real, full-detail pull — fires whenever the selected team/sprint set
+// changes, scoped tightly by JQL to exactly the selected teams and sprints,
+// so it only ever fetches what's actually going to be shown/published.
 async function spLoadSprintTickets(){
   if(spState.loading) return;
   spState.loading = true;
@@ -6483,9 +6495,9 @@ async function spLoadSprintTickets(){
   renderSprintPlanning();
 
   try {
-    var clauses = ['sprint = '+spState.sprintFilter];
-    if(spState.teamFilter!=='all') clauses.push('cf[10039] = "'+spState.teamFilter.replace(/"/g,'\\"')+'"');
-    var jql = clauses.join(' AND ') + ' ORDER BY created DESC';
+    var teamClause = spState.selectedTeams.map(function(t){ return '"'+t.replace(/"/g,'\\"')+'"'; }).join(',');
+    var sprintClause = spState.selectedSprintIds.join(',');
+    var jql = 'sprint in ('+sprintClause+') AND cf[10039] in ('+teamClause+') ORDER BY created DESC';
     var fieldList = ['summary','description','issuetype','status','customfield_10040','customfield_10039','labels','assignee','reporter','created','fixVersions','parent',spState.sprintFieldId];
     if(spState.flaggedFieldId) fieldList.push(spState.flaggedFieldId);
     var fields = fieldList.join(',');
@@ -6545,22 +6557,41 @@ async function spLoadSprintTickets(){
   renderSprintPlanning();
 }
 
-function spFilterTeam(t){
-  spState.teamFilter = t;
-  spState.sprintFilter = null;
-  spState.sprintsLoaded = false;
-  spState.sprintOptions = [];
-  spState.tickets = [];
+function spAddTeam(team){
+  if(!team || spState.selectedTeams.indexOf(team)>=0) return;
+  spState.selectedTeams.push(team);
+  spState.tickets = []; spState.loaded = false;
   spState.summaries = {};
   spState.publishResult = null; spState.publishError = null;
-  spLoadSprintsForTeam();
+  spLoadSprintsForTeams();
 }
-function spSetSprint(sprintId){
-  spState.sprintFilter = sprintId ? parseInt(sprintId,10) : null;
+function spRemoveTeam(team){
+  var idx = spState.selectedTeams.indexOf(team);
+  if(idx<0) return;
+  spState.selectedTeams.splice(idx,1);
+  spState.tickets = []; spState.loaded = false;
   spState.summaries = {};
   spState.publishResult = null; spState.publishError = null;
-  if(spState.sprintFilter==null){ spState.tickets=[]; renderSprintPlanning(); return; }
+  if(spState.selectedTeams.length) spLoadSprintsForTeams();
+  else { spState.sprintOptions=[]; spState.selectedSprintIds=[]; spState.sprintsLoaded=true; renderSprintPlanning(); }
+}
+function spAddSprint(sprintId){
+  var id = parseInt(sprintId,10);
+  if(!id || spState.selectedSprintIds.indexOf(id)>=0) return;
+  spState.selectedSprintIds.push(id);
+  spState.summaries = {};
+  spState.publishResult = null; spState.publishError = null;
   spLoadSprintTickets();
+}
+function spRemoveSprint(sprintId){
+  var id = parseInt(sprintId,10);
+  var idx = spState.selectedSprintIds.indexOf(id);
+  if(idx<0) return;
+  spState.selectedSprintIds.splice(idx,1);
+  spState.summaries = {};
+  spState.publishResult = null; spState.publishError = null;
+  if(spState.selectedSprintIds.length) spLoadSprintTickets();
+  else { spState.tickets=[]; renderSprintPlanning(); }
 }
 
 function spTeamOptions(){
@@ -6569,6 +6600,16 @@ function spTeamOptions(){
 function spSprintOptions(){
   return spState.sprintOptions;
 }
+// A ticket can be tagged into more than one sprint over its history; prefer
+// whichever of the currently-selected sprints it actually belongs to (so
+// tagging/display always matches the query context), falling back to the
+// general "primary" sprint if none match for some reason.
+function spTicketSprintName(t){
+  var matches = (t.sprints||[]).filter(function(s){ return spState.selectedSprintIds.indexOf(s.id)>=0; });
+  var sp = matches.length ? (matches.find(function(s){ return s.state==='active'; }) || matches[0]) : spPrimarySprint(t.sprints);
+  return sp ? sp.name : 'Unknown Sprint';
+}
+
 // A ticket that already has a Fix Version/Release set (shown in the Release
 // column) is already tracked/shipped through a separate release process -
 // excluded by default so it doesn't clutter the sprint approval doc.
@@ -6606,12 +6647,10 @@ function spSetSort(col){
 function spExportCSV(){
   var rows = spGetFilteredTickets();
   if(!rows.length) return;
-  var sprintOpt = spSprintOptions().find(function(s){ return s.id===spState.sprintFilter; });
-  var sprintName = sprintOpt ? sprintOpt.name : ('Sprint'+spState.sprintFilter);
-  var header = ['Key','Name','Epic Key','Epic Name','Project','Type','Severity','Labels','Assignee','Reporter','Created','Release','Flag','Summary'];
+  var header = ['Key','Name','Agile Team','Epic Key','Epic Name','Project','Type','Severity','Labels','Assignee','Reporter','Created','Release','Flag','Summary'];
   var csvRows = [header].concat(rows.map(function(t){
     return [
-      t.key, t.summary, t.epicKey||'', t.epicName||'', t.project, t.type, t.severity||'',
+      t.key, t.summary, t.team||'', t.epicKey||'', t.epicName||'', t.project, t.type, t.severity||'',
       (t.labels||[]).join(', '), t.assignee, t.reporter,
       spFmtDate(t.created), spFmtRelease(t.releases), t.flagged?'Flagged':'',
       spState.summaries[t.key] || '',
@@ -6622,7 +6661,8 @@ function spExportCSV(){
   var url = URL.createObjectURL(blob);
   var a = document.createElement('a');
   a.href = url;
-  a.download = 'sprint-'+sprintName.replace(/[^a-z0-9]+/gi,'-')+'-'+(spState.teamFilter!=='all'?spState.teamFilter.replace(/[^a-z0-9]+/gi,'-')+'-':'')+new Date().toISOString().slice(0,10)+'.csv';
+  var teamsPart = spState.selectedTeams.join('-').replace(/[^a-z0-9-]+/gi,'-') || 'export';
+  a.download = 'sprint-'+teamsPart+'-'+new Date().toISOString().slice(0,10)+'.csv';
   document.body.appendChild(a); a.click(); document.body.removeChild(a);
   URL.revokeObjectURL(url);
 }
@@ -6662,10 +6702,16 @@ async function spGenerateSummaries(){
   renderSprintPlanning();
 }
 
-function spBuildPayloadRows(rows, team, sprintName){
+// Each row is tagged with its OWN team + sprint (not a single global value),
+// since a multi-select load can span several teams and sprints at once. The
+// backend automatically builds a combined page (with Team/Sprint columns
+// and a joined header) whenever the rows span more than one team+sprint
+// pair, or a normal single-sprint page when they don't - no separate
+// "combined" flag or workflow needed on this end.
+function spBuildPayloadRows(rows){
   return rows.map(function(t){
     return {
-      key:t.key, name:t.summary, team:team, sprintName:sprintName,
+      key:t.key, name:t.summary, team:t.team||'Unassigned', sprintName:spTicketSprintName(t),
       epicKey:t.epicKey||'', epicName:t.epicName||'',
       type:t.type, severity:t.severity, labels:t.labels,
       assignee:t.assignee, reporter:t.reporter, created:t.created,
@@ -6678,13 +6724,6 @@ function spBuildPayloadRows(rows, team, sprintName){
 async function spPublish(){
   var rows = spGetFilteredTickets();
   if(!rows.length) return;
-  if(spState.teamFilter==='all'){
-    spState.publishError = 'Pick a specific team before publishing — approval docs are organized by team.';
-    renderSprintPlanning();
-    return;
-  }
-  var sprintOpt = spSprintOptions().find(function(s){ return s.id===spState.sprintFilter; });
-  var sprintName = sprintOpt ? sprintOpt.name : ('Sprint '+spState.sprintFilter);
 
   spState.publishing = true;
   spState.publishError = null;
@@ -6692,61 +6731,10 @@ async function spPublish(){
   renderSprintPlanning();
 
   try {
-    var payloadRows = spBuildPayloadRows(rows, spState.teamFilter, sprintName);
+    var payloadRows = spBuildPayloadRows(rows);
     var res = await fetch('/api/sprintplanning', {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({ rows: payloadRows }),
-    });
-    if(!res.ok){ var errText=await res.text(); throw new Error('Server error '+res.status+': '+errText.slice(0,300)); }
-    var data = await res.json();
-    if(data.error) throw new Error(data.error);
-    spState.publishResult = data;
-  } catch(e) {
-    spState.publishError = e.message;
-  }
-  spState.publishing = false;
-  renderSprintPlanning();
-}
-
-// Combined multi-team publishing: queue up the currently-loaded team+sprint
-// as a "set", repeat for other teams/sprints, then publish everything
-// together as one Confluence page. Re-adding the same team+sprint replaces
-// its entry rather than duplicating it.
-function spAddToCombinedSet(){
-  var rows = spGetFilteredTickets();
-  if(!rows.length) return;
-  if(spState.teamFilter==='all'){
-    spState.publishError = 'Pick a specific team before adding it to a combined set.';
-    renderSprintPlanning();
-    return;
-  }
-  var sprintOpt = spSprintOptions().find(function(s){ return s.id===spState.sprintFilter; });
-  var sprintName = sprintOpt ? sprintOpt.name : ('Sprint '+spState.sprintFilter);
-  var team = spState.teamFilter;
-  var entry = { team:team, sprintName:sprintName, rows: spBuildPayloadRows(rows, team, sprintName) };
-  var dupeIdx = spState.combinedSets.findIndex(function(s){ return s.team===team && s.sprintName===sprintName; });
-  if(dupeIdx>=0) spState.combinedSets[dupeIdx] = entry;
-  else spState.combinedSets.push(entry);
-  spState.publishError = null;
-  renderSprintPlanning();
-}
-function spRemoveCombinedSet(idx){
-  spState.combinedSets.splice(parseInt(idx,10),1);
-  renderSprintPlanning();
-}
-async function spPublishCombined(){
-  if(!spState.combinedSets.length) return;
-  spState.publishing = true;
-  spState.publishError = null;
-  spState.publishResult = null;
-  renderSprintPlanning();
-
-  try {
-    var allRows = [];
-    spState.combinedSets.forEach(function(s){ allRows = allRows.concat(s.rows); });
-    var res = await fetch('/api/sprintplanning', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ rows: allRows }),
     });
     if(!res.ok){ var errText=await res.text(); throw new Error('Server error '+res.status+': '+errText.slice(0,300)); }
     var data = await res.json();
@@ -6804,45 +6792,69 @@ function renderSprintPlanning(){
   var html='';
 
   html += '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:14px">';
-  html += '<span style="font-size:12px;color:var(--text3)">Sprint Planning is project-agnostic — pick a team and sprint to load just that sprint\'s tickets.</span>';
+  html += '<span style="font-size:12px;color:var(--text3)">Sprint Planning is project-agnostic — pick one or more teams and sprints to load their tickets together.</span>';
   html += '<button onclick="spState.teamsLoaded=false;spLoadTeamNames()" style="margin-left:auto;font-size:11px;padding:5px 10px;border-radius:6px;border:0.5px solid var(--border2);background:transparent;color:var(--text2);cursor:pointer">&#8635; Refresh teams</button>';
   html += '</div>';
 
-  // Team + Sprint selectors
-  var teamOpts = spTeamOptions();
-  var sprintOpts = spSprintOptions();
-  html += '<div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center;margin-bottom:16px">';
-  html += '<div><div style="font-size:10px;color:var(--text3);text-transform:uppercase;font-family:var(--font-mono);margin-bottom:4px">Team</div>';
-  html += '<select onchange="spFilterTeam(this.value)" style="font-size:13px;padding:6px 10px;border-radius:6px;border:0.5px solid var(--border2);background:var(--bg3);color:var(--text);min-width:160px">';
-  html += '<option value="all"'+(spState.teamFilter==='all'?' selected':'')+'>All Teams</option>';
-  teamOpts.forEach(function(t){ html += '<option value="'+escHtml(t)+'"'+(spState.teamFilter===t?' selected':'')+'>'+escHtml(t)+'</option>'; });
-  html += '</select></div>';
+  // Team multi-select: "+ Add team" dropdown + removable chips
+  html += '<div style="margin-bottom:14px">';
+  html += '<div style="font-size:10px;color:var(--text3);text-transform:uppercase;font-family:var(--font-mono);margin-bottom:6px">Teams</div>';
+  html += '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">';
+  var unselTeams = spTeamOptions().filter(function(t){ return spState.selectedTeams.indexOf(t)<0; });
+  html += '<select onchange="spAddTeam(this.value);this.value=\'\'" style="font-size:13px;padding:6px 10px;border-radius:6px;border:0.5px solid var(--border2);background:var(--bg3);color:var(--text)">';
+  html += '<option value="">+ Add team…</option>';
+  unselTeams.forEach(function(t){ html += '<option value="'+escHtml(t)+'">'+escHtml(t)+'</option>'; });
+  html += '</select>';
+  spState.selectedTeams.forEach(function(t){
+    html += '<span style="display:inline-flex;align-items:center;gap:6px;font-size:12px;padding:4px 6px 4px 10px;border-radius:14px;background:var(--bg3);border:0.5px solid var(--border2);color:var(--text)">'
+      + escHtml(t)
+      + '<span data-rm-team="'+escHtml(t)+'" onclick="spRemoveTeam(this.dataset.rmTeam)" style="cursor:pointer;color:var(--text3);font-weight:700;padding:0 3px" title="Remove">&times;</span></span>';
+  });
+  if(!spState.selectedTeams.length) html += '<span style="font-size:12px;color:var(--text3)">No teams selected yet</span>';
+  html += '</div></div>';
 
-  html += '<div><div style="font-size:10px;color:var(--text3);text-transform:uppercase;font-family:var(--font-mono);margin-bottom:4px">Sprint</div>';
-  if(spState.sprintsLoading){
-    html += '<div style="font-size:13px;color:var(--text3);padding:6px 10px">&#8635; Finding sprints…</div></div>';
-  } else if(spState.sprintsError){
-    html += '<div style="font-size:12px;color:var(--red);padding:6px 0">Failed: '+escHtml(spState.sprintsError)+' <span onclick="spLoadSprintsForTeam()" style="color:var(--blue);cursor:pointer;text-decoration:underline">Retry</span></div></div>';
-  } else {
-    html += '<select onchange="spSetSprint(this.value)" style="font-size:13px;padding:6px 10px;border-radius:6px;border:0.5px solid var(--border2);background:var(--bg3);color:var(--text);min-width:220px">';
-    html += '<option value="">Select a sprint…</option>';
-    sprintOpts.forEach(function(s){
-      var stateLabel = s.state==='active'?' (Active)':s.state==='future'?' (Future)':s.state==='closed'?' (Closed)':'';
-      html += '<option value="'+s.id+'"'+(spState.sprintFilter===s.id?' selected':'')+'>'+escHtml(s.name)+stateLabel+'</option>';
-    });
-    html += '</select></div>';
+  // Sprint multi-select - only shown once at least one team is picked, since
+  // the sprint pool depends on the selected team(s)
+  if(spState.selectedTeams.length){
+    html += '<div style="margin-bottom:14px">';
+    html += '<div style="font-size:10px;color:var(--text3);text-transform:uppercase;font-family:var(--font-mono);margin-bottom:6px">Sprints</div>';
+    if(spState.sprintsLoading){
+      html += '<div style="font-size:13px;color:var(--text3)">&#8635; Finding sprints…</div>';
+    } else if(spState.sprintsError){
+      html += '<div style="font-size:12px;color:var(--red)">Failed: '+escHtml(spState.sprintsError)+' <span onclick="spLoadSprintsForTeams()" style="color:var(--blue);cursor:pointer;text-decoration:underline">Retry</span></div>';
+    } else {
+      html += '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">';
+      var unselSprints = spSprintOptions().filter(function(s){ return spState.selectedSprintIds.indexOf(s.id)<0; });
+      html += '<select onchange="spAddSprint(this.value);this.value=\'\'" style="font-size:13px;padding:6px 10px;border-radius:6px;border:0.5px solid var(--border2);background:var(--bg3);color:var(--text)">';
+      html += '<option value="">+ Add sprint…</option>';
+      unselSprints.forEach(function(s){
+        var stateLabel = s.state==='active'?' (Active)':s.state==='future'?' (Future)':s.state==='closed'?' (Closed)':'';
+        html += '<option value="'+s.id+'">'+escHtml(s.name)+stateLabel+'</option>';
+      });
+      html += '</select>';
+      spState.selectedSprintIds.forEach(function(id){
+        var s = spState.sprintOptions.find(function(x){ return x.id===id; });
+        var label = s ? s.name : ('Sprint '+id);
+        html += '<span style="display:inline-flex;align-items:center;gap:6px;font-size:12px;padding:4px 6px 4px 10px;border-radius:14px;background:var(--bg3);border:0.5px solid var(--border2);color:var(--text)">'
+          + escHtml(label)
+          + '<span data-rm-sprint="'+id+'" onclick="spRemoveSprint(this.dataset.rmSprint)" style="cursor:pointer;color:var(--text3);font-weight:700;padding:0 3px" title="Remove">&times;</span></span>';
+      });
+      if(!spState.selectedSprintIds.length) html += '<span style="font-size:12px;color:var(--text3)">No sprints selected yet</span>';
+      html += '</div>';
+    }
+    html += '</div>';
   }
-  html += '<label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text2);cursor:pointer;margin-left:8px;margin-top:16px" title="Excludes tickets that already have a Fix Version/Release set in Jira"><input type="checkbox" onchange="spState.excludeReleaseTagged=this.checked;renderSprintPlanning()"'+(spState.excludeReleaseTagged?' checked':'')+' style="accent-color:var(--blue)"> Exclude tickets with a Release already set</label>';
-  html += '</div>';
 
-  if(spState.sprintFilter==null){
-    html += '<div style="padding:40px;text-align:center;color:var(--text3)">Pick a team and sprint above to load its tickets.</div>';
+  html += '<label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text2);cursor:pointer;margin-bottom:14px" title="Excludes tickets that already have a Fix Version/Release set in Jira"><input type="checkbox" onchange="spState.excludeReleaseTagged=this.checked;renderSprintPlanning()"'+(spState.excludeReleaseTagged?' checked':'')+' style="accent-color:var(--blue)"> Exclude tickets with a Release already set</label>';
+
+  if(!spState.selectedTeams.length || !spState.selectedSprintIds.length){
+    html += '<div style="padding:40px;text-align:center;color:var(--text3)">Pick at least one team and one sprint above to load tickets.</div>';
     root.innerHTML = html;
     return;
   }
 
   if(spState.loading){
-    html += '<div style="padding:40px;text-align:center;color:var(--text3)">&#8635; Loading tickets for this sprint…</div>';
+    html += '<div style="padding:40px;text-align:center;color:var(--text3)">&#8635; Loading tickets…</div>';
     root.innerHTML = html;
     return;
   }
@@ -6854,32 +6866,15 @@ function renderSprintPlanning(){
   }
 
   var rows = spGetFilteredTickets();
-  var sprintOpt = sprintOpts.find(function(s){ return s.id===spState.sprintFilter; });
-  var sprintLabel = sprintOpt ? sprintOpt.name : '';
 
   // Action row
   html += '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:14px">';
-  html += '<span style="font-size:12px;color:var(--text3)">'+rows.length+' ticket'+(rows.length===1?'':'s')+' in '+escHtml(sprintLabel)+'</span>';
-  html += '<button onclick="spLoadSprintTickets()" style="margin-left:auto;font-size:11px;padding:5px 10px;border-radius:6px;border:0.5px solid var(--border2);background:transparent;color:var(--text2);cursor:pointer">&#8635; Refresh sprint items</button>';
+  html += '<span style="font-size:12px;color:var(--text3)">'+rows.length+' ticket'+(rows.length===1?'':'s')+' across '+spState.selectedTeams.length+' team'+(spState.selectedTeams.length===1?'':'s')+' and '+spState.selectedSprintIds.length+' sprint'+(spState.selectedSprintIds.length===1?'':'s')+'</span>';
+  html += '<button onclick="spLoadSprintTickets()" style="margin-left:auto;font-size:11px;padding:5px 10px;border-radius:6px;border:0.5px solid var(--border2);background:transparent;color:var(--text2);cursor:pointer">&#8635; Refresh</button>';
   html += '<button class="btn btn-ghost btn-sm" onclick="spExportCSV()">&#8681; Export CSV</button>';
   html += '<button class="btn btn-ghost btn-sm" onclick="spGenerateSummaries()"'+(spState.summarizing?' disabled':'')+'>'+(spState.summarizing?'&#8635; Generating…':'&#10022; Generate AI Summaries')+'</button>';
-  html += '<button class="btn btn-ghost btn-sm" onclick="spAddToCombinedSet()">&#10133; Add to Combined Set</button>';
   html += '<button class="btn btn-sm" onclick="spPublish()"'+(spState.publishing?' disabled':'')+'>'+(spState.publishing?'&#8635; Publishing…':'&#128228; Publish to Confluence')+'</button>';
   html += '</div>';
-
-  if(spState.combinedSets.length){
-    html += '<div style="border:0.5px solid var(--border2);border-radius:8px;padding:10px 14px;margin-bottom:14px;background:var(--bg2)">';
-    html += '<div style="font-size:10px;color:var(--text3);text-transform:uppercase;font-family:var(--font-mono);margin-bottom:8px">Combined Set — will publish as one page</div>';
-    html += '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">';
-    spState.combinedSets.forEach(function(s,idx){
-      html += '<span style="display:inline-flex;align-items:center;gap:6px;font-size:12px;padding:4px 6px 4px 10px;border-radius:14px;background:var(--bg3);border:0.5px solid var(--border2);color:var(--text)">'
-        + escHtml(s.team)+' — '+escHtml(s.sprintName)+' ('+s.rows.length+')'
-        + '<span data-rm-set="'+idx+'" onclick="spRemoveCombinedSet(this.dataset.rmSet)" style="cursor:pointer;color:var(--text3);font-weight:700;padding:0 3px" title="Remove">&times;</span></span>';
-    });
-    html += '</div>';
-    html += '<button class="btn btn-sm" onclick="spPublishCombined()"'+(spState.publishing?' disabled':'')+'>'+(spState.publishing?'&#8635; Publishing…':'&#128228; Publish Combined Page ('+spState.combinedSets.length+' teams/sprints)')+'</button>';
-    html += '</div>';
-  }
 
   if(spState.publishError){
     html += '<div style="padding:12px 14px;background:rgba(239,68,68,0.1);border:0.5px solid rgba(239,68,68,0.3);border-radius:8px;color:#f87171;font-size:12px;margin-bottom:14px">'+escHtml(spState.publishError)+'</div>';
@@ -6896,10 +6891,10 @@ function renderSprintPlanning(){
       + '</div>';
   }
 
-  var grid='80px 220px 160px 70px 90px 70px 1fr 120px 120px 90px 130px 70px 2fr';
+  var grid='80px 200px 110px 150px 70px 90px 90px 1fr 110px 110px 90px 120px 70px 2fr';
   html += '<div style="background:var(--bg2);border:0.5px solid var(--border);border-radius:12px;overflow:hidden">';
   html += '<div style="display:grid;grid-template-columns:'+grid+';gap:10px;padding:9px 14px;background:var(--bg3);border-bottom:0.5px solid var(--border)">';
-  [['key','Key'],['summary','Name'],['epicKey','Epic'],['project','Project'],['type','Type'],['severity','Severity'],['labels','Labels'],['assignee','Assignee'],['reporter','Reporter'],['created','Created'],['release','Release'],['flagged','Flag'],[null,'Summary']].forEach(function(c){
+  [['key','Key'],['summary','Name'],['team','Agile Team'],['epicKey','Epic'],['project','Project'],['type','Type'],['severity','Severity'],['labels','Labels'],['assignee','Assignee'],['reporter','Reporter'],['created','Created'],['release','Release'],['flagged','Flag'],[null,'Summary']].forEach(function(c){
     var arrow = c[0]===null ? '' : (spState.sort.col!==c[0] ? '<span style="opacity:0.3"> &#8597;</span>' : '<span> '+(spState.sort.dir==='asc'?'&#8593;':'&#8595;')+'</span>');
     var cursor = c[0]===null ? '' : 'cursor:pointer;user-select:none;';
     var onclick = c[0]===null ? '' : ' onclick="spSetSort(\''+c[0]+'\')"';
@@ -6922,6 +6917,7 @@ function renderSprintPlanning(){
       html += '<div style="display:grid;grid-template-columns:'+grid+';gap:10px;padding:8px 14px;border-bottom:0.5px solid rgba(255,255,255,0.04);align-items:center">'
         + '<a href="https://riversidejira.atlassian.net/browse/'+escHtml(t.key)+'" target="_blank" style="font-family:var(--font-mono);font-size:11px;color:var(--blue);text-decoration:none">'+escHtml(t.key)+'</a>'
         + '<span style="font-size:12px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+escHtml(t.summary)+'">'+escHtml(t.summary)+'</span>'
+        + '<span style="font-size:11px;color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+escHtml(t.team)+'">'+escHtml(t.team||'—')+'</span>'
         + '<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+epicHtml+'</span>'
         + '<span style="font-size:11px;color:var(--text3);font-family:var(--font-mono)">'+escHtml(t.project)+'</span>'
         + '<span><span class="rn-itype '+typeClass+'" style="font-size:9px;padding:2px 6px;border-radius:6px">'+escHtml(t.type)+'</span></span>'
