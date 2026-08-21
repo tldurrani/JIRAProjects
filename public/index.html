@@ -6278,6 +6278,10 @@ var spState = {
   fieldsResolved: false,
   fieldsError: null,
 
+  projectsListLoaded: false,
+  availableProjects: [],  // real Jira projects, for the "+ Add project" dropdown
+  selectedProjects: ['DM'],  // multi-select, scopes every query below - defaults to DM only
+
   teamsLoaded: false,
   teamsLoading: false,
   teamsError: null,
@@ -6293,6 +6297,7 @@ var spState = {
   selectedSprintIds: [],  // multi-select: array of sprint ids
   sort: { col:'key', dir:'asc' },
   excludeReleaseTagged: true,  // hide tickets that already have a Fix Version/Release set, by default
+  manuallyExcluded: {},   // ticket key -> true = unchecked by hand, still visible but excluded from export/publish
 
   tickets: [],            // full detail - holds tickets across every selected team+sprint combination
   loading: false,
@@ -6363,6 +6368,53 @@ function spPrimarySprint(sprints){
 // Cheap pass: only pulls the Team field, nothing else, and only needs to
 // scan enough tickets to see every distinct team name at least once - team
 // values repeat constantly, so a shallow scan is enough for this part.
+// Real Jira projects, for the "+ Add project" dropdown - loaded once and
+// cached, same pattern as the Bugs tab's project selector.
+async function spLoadProjectsList(){
+  if(spState.projectsListLoaded) return;
+  try {
+    var resp = await jiraGet('/rest/api/3/project?maxResults=200');
+    var list = Array.isArray(resp) ? resp : (resp.values||[]);
+    spState.availableProjects = list.map(function(p){ return {key:p.key, name:p.name}; }).sort(function(a,b){ return a.key<b.key?-1:(a.key>b.key?1:0); });
+  } catch(e) { console.error('spLoadProjectsList:', e); spState.availableProjects = []; }
+  spState.projectsListLoaded = true;
+}
+
+function spProjectClause(){
+  if(!spState.selectedProjects.length) return '';
+  return ' AND project in (' + spState.selectedProjects.map(function(p){ return '"'+p.replace(/"/g,'\\"')+'"'; }).join(',') + ')';
+}
+
+// Changing which projects are in scope invalidates everything discovered
+// downstream (teams, sprints, tickets), since all of it was scoped to the
+// old project set.
+function spResetDownstreamOfProjects(){
+  spState.teamsLoaded = false;
+  spState.teamOptions = [];
+  spState.selectedTeams = [];
+  spState.sprintsLoaded = false;
+  spState.sprintOptions = [];
+  spState.selectedSprintIds = [];
+  spState.tickets = [];
+  spState.loaded = false;
+  spState.manuallyExcluded = {};
+  spState.summaries = {};
+  spState.publishResult = null; spState.publishError = null;
+}
+function spAddProject(key){
+  if(!key || spState.selectedProjects.indexOf(key)>=0) return;
+  spState.selectedProjects.push(key);
+  spResetDownstreamOfProjects();
+  spLoadTeamNames();
+}
+function spRemoveProject(key){
+  var idx = spState.selectedProjects.indexOf(key);
+  if(idx<0) return;
+  spState.selectedProjects.splice(idx,1);
+  spResetDownstreamOfProjects();
+  spLoadTeamNames();
+}
+
 async function spLoadTeamNames(){
   if(spState.teamsLoading) return;
   spState.teamsLoading = true;
@@ -6371,12 +6423,13 @@ async function spLoadTeamNames(){
   if(root) root.innerHTML = '<div style="padding:40px;text-align:center;color:var(--text3)">&#8635; Finding teams…</div>';
 
   await spResolveFields();
+  await spLoadProjectsList();
   if(spState.fieldsError || !spState.sprintFieldId){
     spState.teamsLoaded = true; spState.teamsLoading = false; renderSprintPlanning(); return;
   }
 
   try {
-    var jql = 'sprint is not EMPTY ORDER BY created DESC';
+    var jql = 'sprint is not EMPTY'+spProjectClause()+' ORDER BY created DESC';
     var all=[], startAt=0, pageSize=100, guard=0, nextPageToken=null;
     while(guard<8){
       var qs = '/rest/api/3/search/jql?jql='+encodeURIComponent(jql)+'&fields=customfield_10039&maxResults='+pageSize
@@ -6428,7 +6481,7 @@ async function spLoadSprintsForTeams(){
 
   try {
     var teamClause = spState.selectedTeams.map(function(t){ return '"'+t.replace(/"/g,'\\"')+'"'; }).join(',');
-    var jql = 'sprint is not EMPTY AND cf[10039] in ('+teamClause+') ORDER BY created DESC';
+    var jql = 'sprint is not EMPTY AND cf[10039] in ('+teamClause+')'+spProjectClause()+' ORDER BY created DESC';
     var all=[], startAt=0, pageSize=100, guard=0, nextPageToken=null;
     var seenSprintIds={};
     while(guard<30){
@@ -6497,7 +6550,7 @@ async function spLoadSprintTickets(){
   try {
     var teamClause = spState.selectedTeams.map(function(t){ return '"'+t.replace(/"/g,'\\"')+'"'; }).join(',');
     var sprintClause = spState.selectedSprintIds.join(',');
-    var jql = 'sprint in ('+sprintClause+') AND cf[10039] in ('+teamClause+') ORDER BY created DESC';
+    var jql = 'sprint in ('+sprintClause+') AND cf[10039] in ('+teamClause+')'+spProjectClause()+' ORDER BY created DESC';
     var fieldList = ['summary','description','issuetype','status','customfield_10040','customfield_10039','labels','assignee','reporter','created','fixVersions','parent',spState.sprintFieldId];
     if(spState.flaggedFieldId) fieldList.push(spState.flaggedFieldId);
     var fields = fieldList.join(',');
@@ -6638,6 +6691,30 @@ function spGetFilteredTickets(){
   });
   return rows;
 }
+
+// Every ticket is included (checked) by default. Unchecking one marks it
+// manually excluded - it stays visible in the table (dimmed) rather than
+// disappearing, so it's easy to re-check. Only the included subset actually
+// goes into CSV export, AI summaries, and the Confluence publish payload.
+function spToggleTicket(key){
+  if(spState.manuallyExcluded[key]) delete spState.manuallyExcluded[key];
+  else spState.manuallyExcluded[key] = true;
+  renderSprintPlanning();
+}
+function spCheckAll(){
+  spState.manuallyExcluded = {};
+  renderSprintPlanning();
+}
+function spUncheckAll(){
+  var m = {};
+  spGetFilteredTickets().forEach(function(t){ m[t.key] = true; });
+  spState.manuallyExcluded = m;
+  renderSprintPlanning();
+}
+function spGetIncludedTickets(){
+  return spGetFilteredTickets().filter(function(t){ return !spState.manuallyExcluded[t.key]; });
+}
+
 function spSetSort(col){
   if(spState.sort.col===col) spState.sort.dir = spState.sort.dir==='asc'?'desc':'asc';
   else { spState.sort.col=col; spState.sort.dir='asc'; }
@@ -6645,7 +6722,7 @@ function spSetSort(col){
 }
 
 function spExportCSV(){
-  var rows = spGetFilteredTickets();
+  var rows = spGetIncludedTickets();
   if(!rows.length) return;
   var header = ['Key','Name','Agile Team','Epic Key','Epic Name','Project','Type','Severity','Labels','Assignee','Reporter','Created','Release','Flag','Summary'];
   var csvRows = [header].concat(rows.map(function(t){
@@ -6672,7 +6749,7 @@ function spStripHtml(html){
 }
 
 async function spGenerateSummaries(){
-  var rows = spGetFilteredTickets();
+  var rows = spGetIncludedTickets();
   var need = rows.filter(function(t){ return !spState.summaries[t.key]; });
   if(!need.length) return;
   spState.summarizing = true;
@@ -6722,7 +6799,7 @@ function spBuildPayloadRows(rows){
 }
 
 async function spPublish(){
-  var rows = spGetFilteredTickets();
+  var rows = spGetIncludedTickets();
   if(!rows.length) return;
 
   spState.publishing = true;
@@ -6792,9 +6869,28 @@ function renderSprintPlanning(){
   var html='';
 
   html += '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:14px">';
-  html += '<span style="font-size:12px;color:var(--text3)">Sprint Planning is project-agnostic — pick one or more teams and sprints to load their tickets together.</span>';
-  html += '<button onclick="spState.teamsLoaded=false;spLoadTeamNames()" style="margin-left:auto;font-size:11px;padding:5px 10px;border-radius:6px;border:0.5px solid var(--border2);background:transparent;color:var(--text2);cursor:pointer">&#8635; Refresh teams</button>';
+  html += '<span style="font-size:12px;color:var(--text3)">Pick one or more projects, teams, and sprints to load their tickets together.</span>';
+  html += '<button onclick="spState.teamsLoaded=false;spLoadTeamNames()" style="margin-left:auto;font-size:11px;padding:5px 10px;border-radius:6px;border:0.5px solid var(--border2);background:transparent;color:var(--text2);cursor:pointer">&#8635; Refresh</button>';
   html += '</div>';
+
+  // Project multi-select: "+ Add project" dropdown + removable chips.
+  // Everything below (teams, sprints, tickets) is scoped to these projects.
+  html += '<div style="margin-bottom:14px">';
+  html += '<div style="font-size:10px;color:var(--text3);text-transform:uppercase;font-family:var(--font-mono);margin-bottom:6px">Projects</div>';
+  html += '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">';
+  var unselProjects = (spState.availableProjects||[]).filter(function(p){ return spState.selectedProjects.indexOf(p.key)<0; });
+  html += '<select onchange="spAddProject(this.value);this.value=\'\'" style="font-size:13px;padding:6px 10px;border-radius:6px;border:0.5px solid var(--border2);background:var(--bg3);color:var(--text)">';
+  html += '<option value="">+ Add project…</option>';
+  unselProjects.forEach(function(p){ html += '<option value="'+escHtml(p.key)+'">'+escHtml(p.key)+' — '+escHtml(p.name)+'</option>'; });
+  html += '</select>';
+  spState.selectedProjects.forEach(function(p){
+    var full = (spState.availableProjects||[]).find(function(pp){ return pp.key===p; });
+    html += '<span style="display:inline-flex;align-items:center;gap:6px;font-size:12px;padding:4px 6px 4px 10px;border-radius:14px;background:var(--bg3);border:0.5px solid var(--border2);color:var(--text)">'
+      + escHtml(p)+(full?' — '+escHtml(full.name):'')
+      + '<span data-rm-project="'+escHtml(p)+'" onclick="spRemoveProject(this.dataset.rmProject)" style="cursor:pointer;color:var(--text3);font-weight:700;padding:0 3px" title="Remove">&times;</span></span>';
+  });
+  if(!spState.selectedProjects.length) html += '<span style="font-size:12px;color:var(--text3)">No projects selected — pulling from every project</span>';
+  html += '</div></div>';
 
   // Team multi-select: "+ Add team" dropdown + removable chips
   html += '<div style="margin-bottom:14px">';
@@ -6866,11 +6962,14 @@ function renderSprintPlanning(){
   }
 
   var rows = spGetFilteredTickets();
+  var includedCount = rows.filter(function(t){ return !spState.manuallyExcluded[t.key]; }).length;
 
   // Action row
   html += '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:14px">';
-  html += '<span style="font-size:12px;color:var(--text3)">'+rows.length+' ticket'+(rows.length===1?'':'s')+' across '+spState.selectedTeams.length+' team'+(spState.selectedTeams.length===1?'':'s')+' and '+spState.selectedSprintIds.length+' sprint'+(spState.selectedSprintIds.length===1?'':'s')+'</span>';
-  html += '<button onclick="spLoadSprintTickets()" style="margin-left:auto;font-size:11px;padding:5px 10px;border-radius:6px;border:0.5px solid var(--border2);background:transparent;color:var(--text2);cursor:pointer">&#8635; Refresh</button>';
+  html += '<span style="font-size:12px;color:var(--text3)">'+includedCount+' of '+rows.length+' ticket'+(rows.length===1?'':'s')+' included — across '+spState.selectedTeams.length+' team'+(spState.selectedTeams.length===1?'':'s')+' and '+spState.selectedSprintIds.length+' sprint'+(spState.selectedSprintIds.length===1?'':'s')+'</span>';
+  html += '<button onclick="spCheckAll()" style="margin-left:auto;font-size:11px;padding:5px 10px;border-radius:6px;border:0.5px solid var(--border2);background:transparent;color:var(--text2);cursor:pointer">&#9745; Check All</button>';
+  html += '<button onclick="spUncheckAll()" style="font-size:11px;padding:5px 10px;border-radius:6px;border:0.5px solid var(--border2);background:transparent;color:var(--text2);cursor:pointer">&#9744; Uncheck All</button>';
+  html += '<button onclick="spLoadSprintTickets()" style="font-size:11px;padding:5px 10px;border-radius:6px;border:0.5px solid var(--border2);background:transparent;color:var(--text2);cursor:pointer">&#8635; Refresh</button>';
   html += '<button class="btn btn-ghost btn-sm" onclick="spExportCSV()">&#8681; Export CSV</button>';
   html += '<button class="btn btn-ghost btn-sm" onclick="spGenerateSummaries()"'+(spState.summarizing?' disabled':'')+'>'+(spState.summarizing?'&#8635; Generating…':'&#10022; Generate AI Summaries')+'</button>';
   html += '<button class="btn btn-sm" onclick="spPublish()"'+(spState.publishing?' disabled':'')+'>'+(spState.publishing?'&#8635; Publishing…':'&#128228; Publish to Confluence')+'</button>';
@@ -6891,10 +6990,10 @@ function renderSprintPlanning(){
       + '</div>';
   }
 
-  var grid='80px 200px 110px 150px 70px 90px 90px 1fr 110px 110px 90px 120px 70px 2fr';
+  var grid='36px 80px 200px 110px 150px 70px 90px 90px 1fr 110px 110px 90px 120px 70px 2fr';
   html += '<div style="background:var(--bg2);border:0.5px solid var(--border);border-radius:12px;overflow:hidden">';
   html += '<div style="display:grid;grid-template-columns:'+grid+';gap:10px;padding:9px 14px;background:var(--bg3);border-bottom:0.5px solid var(--border)">';
-  [['key','Key'],['summary','Name'],['team','Agile Team'],['epicKey','Epic'],['project','Project'],['type','Type'],['severity','Severity'],['labels','Labels'],['assignee','Assignee'],['reporter','Reporter'],['created','Created'],['release','Release'],['flagged','Flag'],[null,'Summary']].forEach(function(c){
+  [[null,''],['key','Key'],['summary','Name'],['team','Agile Team'],['epicKey','Epic'],['project','Project'],['type','Type'],['severity','Severity'],['labels','Labels'],['assignee','Assignee'],['reporter','Reporter'],['created','Created'],['release','Release'],['flagged','Flag'],[null,'Summary']].forEach(function(c){
     var arrow = c[0]===null ? '' : (spState.sort.col!==c[0] ? '<span style="opacity:0.3"> &#8597;</span>' : '<span> '+(spState.sort.dir==='asc'?'&#8593;':'&#8595;')+'</span>');
     var cursor = c[0]===null ? '' : 'cursor:pointer;user-select:none;';
     var onclick = c[0]===null ? '' : ' onclick="spSetSort(\''+c[0]+'\')"';
@@ -6914,7 +7013,9 @@ function renderSprintPlanning(){
       var epicHtml = t.epicKey
         ? '<a href="https://riversidejira.atlassian.net/browse/'+escHtml(t.epicKey)+'" target="_blank" style="font-size:11px;color:var(--blue);text-decoration:none" title="'+escHtml(t.epicName)+'">'+escHtml(t.epicKey)+(t.epicName?' — '+escHtml(t.epicName):'')+'</a>'
         : '<span style="color:var(--text3);font-size:11px">—</span>';
-      html += '<div style="display:grid;grid-template-columns:'+grid+';gap:10px;padding:8px 14px;border-bottom:0.5px solid rgba(255,255,255,0.04);align-items:center">'
+      var isExcluded = !!spState.manuallyExcluded[t.key];
+      html += '<div style="display:grid;grid-template-columns:'+grid+';gap:10px;padding:8px 14px;border-bottom:0.5px solid rgba(255,255,255,0.04);align-items:center'+(isExcluded?';opacity:0.4':'')+'">'
+        + '<input type="checkbox" data-toggle-ticket="'+escHtml(t.key)+'" onclick="spToggleTicket(this.dataset.toggleTicket)"'+(isExcluded?'':' checked')+' style="accent-color:var(--blue);cursor:pointer">'
         + '<a href="https://riversidejira.atlassian.net/browse/'+escHtml(t.key)+'" target="_blank" style="font-family:var(--font-mono);font-size:11px;color:var(--blue);text-decoration:none">'+escHtml(t.key)+'</a>'
         + '<span style="font-size:12px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+escHtml(t.summary)+'">'+escHtml(t.summary)+'</span>'
         + '<span style="font-size:11px;color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+escHtml(t.team)+'">'+escHtml(t.team||'—')+'</span>'
