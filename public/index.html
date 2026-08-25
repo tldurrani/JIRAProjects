@@ -1202,13 +1202,17 @@ function saveTheme(){
   }
   closeThemeModal(); persist(); renderThemes();
   if(!themeModalEditId){
-    var newT=state.themes[getActiveThemes().length-1];
+    var newT=getActiveThemes()[getActiveThemes().length-1];
     setTimeout(function(){ var c=document.getElementById('tc-'+newT.id); if(c) c.classList.add('open'); },100);
   }
 }
 function deleteTheme(id){
-  if(!confirm('Delete this theme and all its pinned epics?')) return;
-  state.themes=getActiveThemes().filter(function(t){ return t.id!==id; });
+  if(activeQuarterKey === '__all__'){
+    setStatus('Switch to a specific quarter before deleting a theme.', 'error');
+    return;
+  }
+  if(!confirm('Delete this theme and all its pinned epics from this quarter? Other quarters are not affected.')) return;
+  setActiveThemes(getActiveThemes().filter(function(t){ return t.id!==id; }));
   persist(); renderThemes();
 }
 
