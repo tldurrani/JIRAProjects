@@ -3645,8 +3645,10 @@ function qsThemeBlock(t) {
     lines.push('  EPIC '+e.key+' ['+e.status+'] '+ep+'%: '+e.title);
     lines.push('    '+s.done+' done, '+s.inprog+' in-progress/review/testing, '+(s.total-s.done-s.inprog)+' to do'+(s.ptsTotal>0?' | '+s.ptsDone+'/'+s.ptsTotal+' pts':'')+(function(){ var ri=computeEpicRisk(e); return ri.level ? ' | '+ri.level.toUpperCase()+(ri.reason?' ('+ri.reason+')':'') : ''; })());
     if(e.storyList&&e.storyList.length){
+      var done=e.storyList.filter(function(s){return s.statusCat==='done';});
       var inp=e.storyList.filter(function(s){return s.statusCat==='indeterminate';});
       var out=e.storyList.filter(function(s){return s.statusCat==='new';});
+      if(done.length) lines.push('    Done: '+done.slice(0,5).map(function(s){return s.key+' '+s.summary.slice(0,60);}).join(' | ')+(done.length>5?' +'+( done.length-5)+' more':''));
       if(inp.length) lines.push('    In progress: '+inp.slice(0,4).map(function(s){return s.key+' ['+s.status+'] '+s.summary.slice(0,60);}).join(' | ')+(inp.length>4?' +'+( inp.length-4)+' more':''));
       if(out.length) lines.push('    To do: '+out.slice(0,4).map(function(s){return s.key+' '+s.summary.slice(0,60);}).join(' | ')+(out.length>4?' +'+( out.length-4)+' more':''));
     }
@@ -3669,14 +3671,20 @@ function qsOverallTotals(themes) {
 
 // One small, focused call per theme — keeps each individual Netlify function
 // invocation fast regardless of how many themes are in the quarter.
+// Breaks the theme down epic-by-epic, since an executive-facing report needs
+// to see what each individual initiative actually delivered, not just an
+// aggregate theme-level count.
 function buildQSummaryThemePrompt(t) {
   var quarter = getActiveQuarter().label;
   var lines = [];
-  lines.push('You are a senior engineering PM writing one section of a quarterly report for '+quarter+'.');
-  lines.push('Write ONLY two labeled bullet lists for the theme below. No paragraph, no other text, no markdown bold/asterisks, do not restate the theme name as a title.');
-  lines.push('COMPLETED: bullet list (each line starting with "- ") of what was finished this quarter. Reference specific epic keys (e.g. DM-3093) where relevant. If nothing is done yet, write a single bullet saying so.');
-  lines.push('REMAINING: bullet list (each line starting with "- ") of what still needs to happen. Reference specific epic keys and story counts.');
-  lines.push('Each bullet is ONE concise sentence, max ~15 words. No sub-bullets.');
+  lines.push('You are writing one section of an executive-facing quarterly report for '+quarter+'. The reader is a non-technical executive, not an engineer.');
+  lines.push('For EVERY epic listed below, output exactly this pattern and nothing else — no theme-level summary, no extra headers, no preamble:');
+  lines.push('');
+  lines.push('**<Epic title> (<EPIC-KEY>)**');
+  lines.push('Completed: <one plain-language sentence on what was actually finished this quarter, based on the Done story titles below. If nothing is done yet, say so plainly.>');
+  lines.push('Remaining: <one plain-language sentence on what still needs to happen, based on the In progress / To do story titles below and their counts.>');
+  lines.push('');
+  lines.push('Rules: plain, jargon-free language an executive can understand at a glance. No raw ticket titles verbatim — paraphrase into outcomes (e.g. "Finished the new login screen," not "Fix login button z-index bug"). Separate each epic\'s block with a blank line. Keep each Completed/Remaining line to one sentence.');
   lines.push('');
   lines.push(qsThemeBlock(t));
   return lines.join('\n');
