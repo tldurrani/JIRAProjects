@@ -3648,20 +3648,6 @@ function qsEpicBlock(e) {
   return lines.join('\n');
 }
 
-function qsThemeBlock(t) {
-  var epics=t.epics||[];
-  var totS=epics.reduce(function(a,e){return a+((e.stories&&e.stories.total)||0);},0);
-  var dnS=epics.reduce(function(a,e){return a+((e.stories&&e.stories.done)||0);},0);
-  var inpS=epics.reduce(function(a,e){return a+((e.stories&&e.stories.inprog)||0);},0);
-  var pct=totS>0?Math.round(dnS/totS*100):0;
-  var lines=[];
-  lines.push('--- THEME: '+t.name.toUpperCase()+' — '+pct+'% ('+dnS+'/'+totS+' stories, '+inpS+' in progress) ---');
-  epics.forEach(function(e){
-    lines.push('  '+qsEpicBlock(e).split('\n').join('\n  '));
-  });
-  return lines.join('\n');
-}
-
 function qsOverallTotals(themes) {
   var totalStories=0, totalDone=0, totalInprog=0, totalTodo=0, totalPts=0, totalPtsDone=0;
   themes.forEach(function(t){
@@ -3699,37 +3685,49 @@ function buildQEpicPrompt(e) {
   return lines.join('\n');
 }
 
-// One call for the sections that aren't per-theme (exec summary, outstanding
-// work, risks, outlook). Still sees every theme's data for context, but its
-// own output length doesn't grow with theme count the way the old
-// "one paragraph per theme, must cover ALL themes" single call did — that
-// was the actual cause of the 504/"Inactivity Timeout" on quarters with a
-// lot of themes.
-function buildQSummaryMetaPrompt() {
-  var themes = getActiveThemes();
-  var quarter = getActiveQuarter().label;
-  var weeksRem = qsSummaryMode==='all' ? 0 : weeksLeft();
-  var totals = qsOverallTotals(themes);
-  var lines = [];
-  lines.push('You are a senior engineering PM. Write part of an executive quarterly report for '+quarter+'.');
-  lines.push('Write in plain paragraphs — no markdown, no bullet points, no headers with # or *.');
-  lines.push('');
-  lines.push('QUARTER: '+quarter+' | '+weeksRem+' weeks remaining');
-  lines.push('OVERALL: '+totals.overallPct+'% complete — '+totals.totalDone+'/'+totals.totalStories+' stories done, '+totals.totalInprog+' in progress/review/testing, '+totals.totalTodo+' to do'+(totals.totalPts>0?' | '+totals.totalPtsDone+'/'+totals.totalPts+' story points':''));
-  lines.push('THEMES IN THIS QUARTER: '+themes.map(function(t){return t.name;}).join(', '));
-  lines.push('');
-  themes.forEach(function(t){ lines.push(qsThemeBlock(t)); lines.push(''); });
-  lines.push('INSTRUCTIONS — Write exactly two parts in plain prose, separated by a line containing only ===SPLIT=== and nothing else. Do NOT write a per-theme breakdown — that section is written separately elsewhere.');
-  lines.push('');
-  lines.push('PART 1 — EXECUTIVE SUMMARY: 2-3 sentences. Overall completion percentage, total stories done vs total, key wins this quarter.');
-  lines.push('');
-  lines.push('===SPLIT===');
-  lines.push('');
-  lines.push('PART 2 — write these three sections, each on its own line labeled in ALL CAPS followed by a colon, then its content:');
-  lines.push('OUTSTANDING WORK: the most critical incomplete items. Name specific epics and story keys. Include story counts.');
-  lines.push('RISKS & BLOCKERS: epics or stories marked AT RISK. What is blocking them. Recommended action.');
-  lines.push('OUTLOOK: with '+weeksRem+' weeks remaining, is the quarter on track? What must happen to close the gap? Be direct.');
-  return lines.join('\n');
+// Compact, pre-condensed inputs for the report's non-per-epic sections -
+// deterministic one-liners computed in JS, not full story dumps, so these
+// prompts stay small (and therefore fast) regardless of quarter size. The
+// old single combined call (exec summary + outstanding + risks + outlook)
+// still failed even after per-epic batching was added elsewhere, because
+// its own output length still scaled with however much outstanding/at-risk
+// work exists in the quarter - it was never truly fixed-size. Splitting
+// every section into its own tiny call removes that last variable entirely.
+function qsOutstandingItems(themes) {
+  var items = [];
+  themes.forEach(function(t){
+    (t.epics||[]).forEach(function(e){
+      var s = e.stories||{done:0,total:0};
+      var remaining = (s.total||0)-(s.done||0);
+      if(remaining>0) items.push(e.key+' ('+t.name+'): '+e.title+' \u2014 '+remaining+' stories remaining');
+    });
+  });
+  return items;
+}
+function qsRiskItems(themes) {
+  var items = [];
+  themes.forEach(function(t){
+    (t.epics||[]).forEach(function(e){
+      var ri = computeEpicRisk(e);
+      if(ri.level) items.push(e.key+' ('+t.name+'): '+e.title+' \u2014 '+ri.level.toUpperCase()+(ri.reason?' \u2014 '+ri.reason:''));
+    });
+  });
+  return items;
+}
+
+function buildQExecPrompt(totals, quarter) {
+  return 'Write the EXECUTIVE SUMMARY section (plain prose, 2-3 sentences, no markdown, no headers) of an executive quarterly report for '+quarter+'.\n\nOverall: '+totals.overallPct+'% complete \u2014 '+totals.totalDone+'/'+totals.totalStories+' stories done'+(totals.totalPts>0?' | '+totals.totalPtsDone+'/'+totals.totalPts+' story points':'')+'.';
+}
+function buildQOutstandingPrompt(items, quarter) {
+  return 'Write the OUTSTANDING WORK section (plain prose paragraph, 3-5 sentences, no markdown, no headers) of an executive quarterly report for '+quarter+'. Summarize the most important incomplete items below into a readable paragraph, naming specific epic keys.\n\n'
+    + (items.length ? items.slice(0,40).join('\n') : 'Nothing outstanding \u2014 everything tracked this quarter is complete.');
+}
+function buildQRisksPrompt(items, quarter) {
+  return 'Write the RISKS & BLOCKERS section (plain prose paragraph, 3-5 sentences, no markdown, no headers) of an executive quarterly report for '+quarter+'. Below are epics flagged at-risk or critical, with why. Summarize into a readable paragraph naming specific epic keys and recommended action.\n\n'
+    + (items.length ? items.slice(0,30).join('\n') : 'No epics are currently flagged at-risk.');
+}
+function buildQOutlookPrompt(totals, weeksRem, quarter) {
+  return 'Write the OUTLOOK section (plain prose paragraph, 2-4 sentences, no markdown, no headers) of an executive quarterly report for '+quarter+'. With '+weeksRem+' weeks remaining and '+totals.overallPct+'% complete overall, is the quarter on track? Be direct about what must happen to close any gap.';
 }
 
 async function qsFetchSummary(title, description) {
@@ -3798,7 +3796,13 @@ async function generateQSummary(forceRegen) {
 
   try {
     var quarter = getActiveQuarter().label;
-    var metaPromise = qsFetchSummary(quarter + ' Quarterly Summary \u2014 Overview', buildQSummaryMetaPrompt());
+    var totals = qsOverallTotals(themes);
+    var weeksRem = qsSummaryMode==='all' ? 0 : weeksLeft();
+
+    var execPromise = qsFetchSummary(quarter + ' Quarterly Summary \u2014 Executive Summary', buildQExecPrompt(totals, quarter));
+    var outstandingPromise = qsFetchSummary(quarter + ' Quarterly Summary \u2014 Outstanding', buildQOutstandingPrompt(qsOutstandingItems(themes), quarter));
+    var risksPromise = qsFetchSummary(quarter + ' Quarterly Summary \u2014 Risks', buildQRisksPrompt(qsRiskItems(themes), quarter));
+    var outlookPromise = qsFetchSummary(quarter + ' Quarterly Summary \u2014 Outlook', buildQOutlookPrompt(totals, weeksRem, quarter));
 
     // One job per epic, across every theme - flattened so batching caps
     // the number of calls in flight regardless of how they're distributed
@@ -3813,14 +3817,14 @@ async function generateQSummary(forceRegen) {
         .catch(function(e){ return { themeName: job.theme.name, text: '**'+job.epic.title+' ('+job.epic.key+')**\nCompleted: (summary failed: '+e.message+')\nRemaining: —' }; });
     });
 
-    var results = await Promise.all([metaPromise, epicTextsPromise]);
+    var results = await Promise.all([execPromise, outstandingPromise, risksPromise, outlookPromise, epicTextsPromise]);
     clearInterval(msgTimer);
 
-    var metaText = results[0];
-    var epicResults = results[1];
-    var splitParts = metaText.split('===SPLIT===');
-    var execSummary = (splitParts[0] || '').trim();
-    var restSections = (splitParts[1] || metaText).trim(); // fall back to whole text if split marker got dropped
+    var execSummary = results[0];
+    var outstandingText = results[1];
+    var risksText = results[2];
+    var outlookText = results[3];
+    var epicResults = results[4];
 
     // Regroup the flattened epic results back under each theme's header,
     // preserving theme order and each theme's own epic order.
@@ -3833,9 +3837,11 @@ async function generateQSummary(forceRegen) {
       return t.name.toUpperCase() + ':\n\n' + body;
     }).join('\n\n');
 
-    var combined = 'EXECUTIVE SUMMARY:\n\n' + execSummary
+    var combined = 'EXECUTIVE SUMMARY:\n\n' + execSummary.trim()
       + '\n\nTHEME BREAKDOWN:\n\n' + themeBreakdown
-      + '\n\n' + restSections;
+      + '\n\nOUTSTANDING WORK:\n\n' + outstandingText.trim()
+      + '\n\nRISKS & BLOCKERS:\n\n' + risksText.trim()
+      + '\n\nOUTLOOK:\n\n' + outlookText.trim();
 
     if(result_summary_is_empty(combined)) throw new Error('AI returned an empty summary.');
 
