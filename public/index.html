@@ -3631,6 +3631,23 @@ function renderQSummaryStatic() {
 
 // Shared per-theme data block, reused by both the meta call and each
 // individual theme call so the two prompts stay consistent.
+function qsEpicBlock(e) {
+  var lines = [];
+  var s=e.stories||{done:0,inprog:0,todo:0,total:0,ptsDone:0,ptsTotal:0};
+  var ep=s.total>0?Math.round(s.done/s.total*100):0;
+  lines.push('EPIC '+e.key+' ['+e.status+'] '+ep+'%: '+e.title);
+  lines.push(s.done+' done, '+s.inprog+' in-progress/review/testing, '+(s.total-s.done-s.inprog)+' to do'+(s.ptsTotal>0?' | '+s.ptsDone+'/'+s.ptsTotal+' pts':'')+(function(){ var ri=computeEpicRisk(e); return ri.level ? ' | '+ri.level.toUpperCase()+(ri.reason?' ('+ri.reason+')':'') : ''; })());
+  if(e.storyList&&e.storyList.length){
+    var done=e.storyList.filter(function(s){return s.statusCat==='done';});
+    var inp=e.storyList.filter(function(s){return s.statusCat==='indeterminate';});
+    var out=e.storyList.filter(function(s){return s.statusCat==='new';});
+    if(done.length) lines.push('Done: '+done.slice(0,5).map(function(s){return s.key+' '+s.summary.slice(0,60);}).join(' | ')+(done.length>5?' +'+( done.length-5)+' more':''));
+    if(inp.length) lines.push('In progress: '+inp.slice(0,4).map(function(s){return s.key+' ['+s.status+'] '+s.summary.slice(0,60);}).join(' | ')+(inp.length>4?' +'+( inp.length-4)+' more':''));
+    if(out.length) lines.push('To do: '+out.slice(0,4).map(function(s){return s.key+' '+s.summary.slice(0,60);}).join(' | ')+(out.length>4?' +'+( out.length-4)+' more':''));
+  }
+  return lines.join('\n');
+}
+
 function qsThemeBlock(t) {
   var epics=t.epics||[];
   var totS=epics.reduce(function(a,e){return a+((e.stories&&e.stories.total)||0);},0);
@@ -3640,18 +3657,7 @@ function qsThemeBlock(t) {
   var lines=[];
   lines.push('--- THEME: '+t.name.toUpperCase()+' — '+pct+'% ('+dnS+'/'+totS+' stories, '+inpS+' in progress) ---');
   epics.forEach(function(e){
-    var s=e.stories||{done:0,inprog:0,todo:0,total:0,ptsDone:0,ptsTotal:0};
-    var ep=s.total>0?Math.round(s.done/s.total*100):0;
-    lines.push('  EPIC '+e.key+' ['+e.status+'] '+ep+'%: '+e.title);
-    lines.push('    '+s.done+' done, '+s.inprog+' in-progress/review/testing, '+(s.total-s.done-s.inprog)+' to do'+(s.ptsTotal>0?' | '+s.ptsDone+'/'+s.ptsTotal+' pts':'')+(function(){ var ri=computeEpicRisk(e); return ri.level ? ' | '+ri.level.toUpperCase()+(ri.reason?' ('+ri.reason+')':'') : ''; })());
-    if(e.storyList&&e.storyList.length){
-      var done=e.storyList.filter(function(s){return s.statusCat==='done';});
-      var inp=e.storyList.filter(function(s){return s.statusCat==='indeterminate';});
-      var out=e.storyList.filter(function(s){return s.statusCat==='new';});
-      if(done.length) lines.push('    Done: '+done.slice(0,5).map(function(s){return s.key+' '+s.summary.slice(0,60);}).join(' | ')+(done.length>5?' +'+( done.length-5)+' more':''));
-      if(inp.length) lines.push('    In progress: '+inp.slice(0,4).map(function(s){return s.key+' ['+s.status+'] '+s.summary.slice(0,60);}).join(' | ')+(inp.length>4?' +'+( inp.length-4)+' more':''));
-      if(out.length) lines.push('    To do: '+out.slice(0,4).map(function(s){return s.key+' '+s.summary.slice(0,60);}).join(' | ')+(out.length>4?' +'+( out.length-4)+' more':''));
-    }
+    lines.push('  '+qsEpicBlock(e).split('\n').join('\n  '));
   });
   return lines.join('\n');
 }
@@ -3669,24 +3675,27 @@ function qsOverallTotals(themes) {
   return { totalStories:totalStories, totalDone:totalDone, totalInprog:totalInprog, totalTodo:totalTodo, totalPts:totalPts, totalPtsDone:totalPtsDone, overallPct: totalStories>0?Math.round(totalDone/totalStories*100):0 };
 }
 
-// One small, focused call per theme — keeps each individual Netlify function
-// invocation fast regardless of how many themes are in the quarter.
-// Breaks the theme down epic-by-epic, since an executive-facing report needs
-// to see what each individual initiative actually delivered, not just an
-// aggregate theme-level count.
-function buildQSummaryThemePrompt(t) {
+// One tiny call PER EPIC, not per theme. A theme-level call asking the
+// model to write a full breakdown for every epic in that theme could itself
+// run long enough to time out on any theme with a lot of epics — batching
+// how many theme-calls run at once (see qsRunInBatches) doesn't help if a
+// single call is the slow part. Pushing the granularity down to one epic
+// per call keeps every individual call tiny and fast regardless of how many
+// epics or themes exist; only the total call COUNT grows, and that's
+// handled by batching them, not by any one call taking longer.
+function buildQEpicPrompt(e) {
   var quarter = getActiveQuarter().label;
   var lines = [];
-  lines.push('You are writing one section of an executive-facing quarterly report for '+quarter+'. The reader is a non-technical executive, not an engineer.');
-  lines.push('For EVERY epic listed below, output exactly this pattern and nothing else — no theme-level summary, no extra headers, no preamble:');
+  lines.push('You are writing one entry in an executive-facing quarterly report for '+quarter+'. The reader is a non-technical executive, not an engineer.');
+  lines.push('Output exactly this pattern and nothing else — no preamble, no extra headers:');
   lines.push('');
   lines.push('**<Epic title> (<EPIC-KEY>)**');
   lines.push('Completed: <one plain-language sentence on what was actually finished this quarter, based on the Done story titles below. If nothing is done yet, say so plainly.>');
   lines.push('Remaining: <one plain-language sentence on what still needs to happen, based on the In progress / To do story titles below and their counts.>');
   lines.push('');
-  lines.push('Rules: plain, jargon-free language an executive can understand at a glance. No raw ticket titles verbatim — paraphrase into outcomes (e.g. "Finished the new login screen," not "Fix login button z-index bug"). Separate each epic\'s block with a blank line. Keep each Completed/Remaining line to one sentence.');
+  lines.push('Rules: plain, jargon-free language an executive can understand at a glance. No raw ticket titles verbatim — paraphrase into outcomes (e.g. "Finished the new login screen," not "Fix login button z-index bug"). Keep each Completed/Remaining line to one sentence.');
   lines.push('');
-  lines.push(qsThemeBlock(t));
+  lines.push(qsEpicBlock(e));
   return lines.join('\n');
 }
 
@@ -3764,9 +3773,10 @@ async function generateQSummary(forceRegen) {
   document.getElementById('qs-narrative-wrap').style.display='none';
   document.getElementById('qs-gen-btn').style.display='none';
 
-  var msgs = themes.length > 1
+  var totalEpics = themes.reduce(function(n,t){ return n + (t.epics||[]).length; }, 0);
+  var msgs = totalEpics > 1
     ? [
-        'Analyzing ' + themes.length + ' themes...',
+        'Analyzing ' + totalEpics + ' epics...',
         'Calculating completion rates...',
         'Identifying outstanding work...',
         'Assessing risks...',
@@ -3789,20 +3799,38 @@ async function generateQSummary(forceRegen) {
   try {
     var quarter = getActiveQuarter().label;
     var metaPromise = qsFetchSummary(quarter + ' Quarterly Summary \u2014 Overview', buildQSummaryMetaPrompt());
-    var themeTextsPromise = qsRunInBatches(themes, 6, function(t) {
-      return qsFetchSummary(quarter + ' Quarterly Summary \u2014 ' + t.name, buildQSummaryThemePrompt(t));
+
+    // One job per epic, across every theme - flattened so batching caps
+    // the number of calls in flight regardless of how they're distributed
+    // across themes.
+    var epicJobs = [];
+    themes.forEach(function(t){
+      (t.epics||[]).forEach(function(e){ epicJobs.push({ theme: t, epic: e }); });
     });
-    var results = await Promise.all([metaPromise, themeTextsPromise]);
+    var epicTextsPromise = qsRunInBatches(epicJobs, 8, function(job) {
+      return qsFetchSummary(quarter + ' Quarterly Summary \u2014 ' + job.epic.key, buildQEpicPrompt(job.epic))
+        .then(function(text){ return { themeName: job.theme.name, text: text }; })
+        .catch(function(e){ return { themeName: job.theme.name, text: '**'+job.epic.title+' ('+job.epic.key+')**\nCompleted: (summary failed: '+e.message+')\nRemaining: —' }; });
+    });
+
+    var results = await Promise.all([metaPromise, epicTextsPromise]);
     clearInterval(msgTimer);
 
     var metaText = results[0];
-    var themeTexts = results[1];
+    var epicResults = results[1];
     var splitParts = metaText.split('===SPLIT===');
     var execSummary = (splitParts[0] || '').trim();
     var restSections = (splitParts[1] || metaText).trim(); // fall back to whole text if split marker got dropped
 
-    var themeBreakdown = themes.map(function(t, i) {
-      return t.name.toUpperCase() + ':\n\n' + (themeTexts[i] || '').trim();
+    // Regroup the flattened epic results back under each theme's header,
+    // preserving theme order and each theme's own epic order.
+    var themeBreakdown = themes.map(function(t) {
+      var body = epicResults
+        .filter(function(r){ return r.themeName === t.name; })
+        .map(function(r){ return r.text.trim(); })
+        .join('\n\n');
+      if(!body) body = 'No epics tracked in this theme yet.';
+      return t.name.toUpperCase() + ':\n\n' + body;
     }).join('\n\n');
 
     var combined = 'EXECUTIVE SUMMARY:\n\n' + execSummary
