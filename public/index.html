@@ -3673,8 +3673,10 @@ function buildQSummaryThemePrompt(t) {
   var quarter = getActiveQuarter().label;
   var lines = [];
   lines.push('You are a senior engineering PM writing one section of a quarterly report for '+quarter+'.');
-  lines.push('Write ONE paragraph (4-7 sentences) of plain prose covering ONLY the theme below. No headers, no bullet points, no markdown, do not restate the theme name as a title.');
-  lines.push('Cover: completion percentage, what was finished, what is in progress, what remains. Reference specific epic keys (e.g. DM-3093) and story counts.');
+  lines.push('Write ONLY two labeled bullet lists for the theme below. No paragraph, no other text, no markdown bold/asterisks, do not restate the theme name as a title.');
+  lines.push('COMPLETED: bullet list (each line starting with "- ") of what was finished this quarter. Reference specific epic keys (e.g. DM-3093) where relevant. If nothing is done yet, write a single bullet saying so.');
+  lines.push('REMAINING: bullet list (each line starting with "- ") of what still needs to happen. Reference specific epic keys and story counts.');
+  lines.push('Each bullet is ONE concise sentence, max ~15 words. No sub-bullets.');
   lines.push('');
   lines.push(qsThemeBlock(t));
   return lines.join('\n');
@@ -3729,6 +3731,20 @@ async function qsFetchSummary(title, description) {
   return data.summary;
 }
 
+// Runs `fn` over `items` in small concurrent batches instead of firing
+// everything at once — an unbounded Promise.all across many themes could
+// hit Netlify/Anthropic concurrency limits on quarters with a lot of
+// themes, which looks identical to a timeout from the user's side.
+async function qsRunInBatches(items, batchSize, fn) {
+  var results = [];
+  for (var i = 0; i < items.length; i += batchSize) {
+    var batch = items.slice(i, i + batchSize);
+    var batchResults = await Promise.all(batch.map(fn));
+    results = results.concat(batchResults);
+  }
+  return results;
+}
+
 async function generateQSummary(forceRegen) {
   var themes = getActiveThemes();
   if(!themes.length) return;
@@ -3742,7 +3758,7 @@ async function generateQSummary(forceRegen) {
 
   var msgs = themes.length > 1
     ? [
-        'Analyzing ' + themes.length + ' themes in parallel...',
+        'Analyzing ' + themes.length + ' themes...',
         'Calculating completion rates...',
         'Identifying outstanding work...',
         'Assessing risks...',
@@ -3765,20 +3781,20 @@ async function generateQSummary(forceRegen) {
   try {
     var quarter = getActiveQuarter().label;
     var metaPromise = qsFetchSummary(quarter + ' Quarterly Summary \u2014 Overview', buildQSummaryMetaPrompt());
-    var themePromises = themes.map(function(t) {
+    var themeTextsPromise = qsRunInBatches(themes, 6, function(t) {
       return qsFetchSummary(quarter + ' Quarterly Summary \u2014 ' + t.name, buildQSummaryThemePrompt(t));
     });
-    var results = await Promise.all([metaPromise].concat(themePromises));
+    var results = await Promise.all([metaPromise, themeTextsPromise]);
     clearInterval(msgTimer);
 
     var metaText = results[0];
-    var themeTexts = results.slice(1);
+    var themeTexts = results[1];
     var splitParts = metaText.split('===SPLIT===');
     var execSummary = (splitParts[0] || '').trim();
     var restSections = (splitParts[1] || metaText).trim(); // fall back to whole text if split marker got dropped
 
     var themeBreakdown = themes.map(function(t, i) {
-      return t.name + ' \u2014 ' + (themeTexts[i] || '').trim();
+      return t.name.toUpperCase() + ':\n\n' + (themeTexts[i] || '').trim();
     }).join('\n\n');
 
     var combined = 'EXECUTIVE SUMMARY:\n\n' + execSummary
