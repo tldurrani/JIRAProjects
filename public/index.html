@@ -3631,6 +3631,23 @@ function renderQSummaryStatic() {
 
 // Shared per-theme data block, reused by both the meta call and each
 // individual theme call so the two prompts stay consistent.
+// Finds which quarter a date actually falls into, by checking every known
+// quarter's own date range - used to name which prior quarter a story was
+// really completed in, rather than just saying "not this quarter."
+function qsQuarterLabelForDate(dateStr) {
+  if(!dateStr) return null;
+  var d = new Date(dateStr);
+  if(isNaN(d.getTime())) return null;
+  var keys = sortedQuarterKeys();
+  for(var i=0;i<keys.length;i++){
+    var q = state.quarters[keys[i]];
+    if(!q || !q.start || !q.end) continue;
+    var qs = new Date(q.start+'T00:00:00'), qe = new Date(q.end+'T23:59:59');
+    if(d>=qs && d<=qe) return q.label;
+  }
+  return null;
+}
+
 function qsEpicBlock(e) {
   var lines = [];
   var s=e.stories||{done:0,inprog:0,todo:0,total:0,ptsDone:0,ptsTotal:0};
@@ -3638,10 +3655,31 @@ function qsEpicBlock(e) {
   lines.push('EPIC '+e.key+' ['+e.status+'] '+ep+'%: '+e.title);
   lines.push(s.done+' done, '+s.inprog+' in-progress/review/testing, '+(s.total-s.done-s.inprog)+' to do'+(s.ptsTotal>0?' | '+s.ptsDone+'/'+s.ptsTotal+' pts':'')+(function(){ var ri=computeEpicRisk(e); return ri.level ? ' | '+ri.level.toUpperCase()+(ri.reason?' ('+ri.reason+')':'') : ''; })());
   if(e.storyList&&e.storyList.length){
-    var done=e.storyList.filter(function(s){return s.statusCat==='done';});
+    // An epic that carries over from a prior quarter keeps its FULL lifetime
+    // story list, so "done" alone would include work finished before this
+    // quarter started. Split into two buckets instead of silently dropping
+    // the older ones: done THIS quarter (by actual resolution date), and
+    // done in some prior quarter (named, when we can tell which one).
+    var aq = getActiveQuarter();
+    var qStart = aq && aq.start ? new Date(aq.start+'T00:00:00') : null;
+    var qEnd = aq && aq.end ? new Date(aq.end+'T23:59:59') : null;
+    var allDone = e.storyList.filter(function(s){ return s.statusCat==='done'; });
+    var doneThisQuarter = [], donePrior = [];
+    allDone.forEach(function(s){
+      if(!qStart || !qEnd || !s.resolutionDate){ donePrior.push(s); return; } // can't confirm this quarter - treat as prior/unknown, never assume
+      var rd = new Date(s.resolutionDate);
+      if(rd >= qStart && rd <= qEnd) doneThisQuarter.push(s);
+      else donePrior.push(s);
+    });
     var inp=e.storyList.filter(function(s){return s.statusCat==='indeterminate';});
     var out=e.storyList.filter(function(s){return s.statusCat==='new';});
-    if(done.length) lines.push('Done: '+done.slice(0,5).map(function(s){return s.key+' '+s.summary.slice(0,60);}).join(' | ')+(done.length>5?' +'+( done.length-5)+' more':''));
+    lines.push(doneThisQuarter.length ? 'Done THIS QUARTER: '+doneThisQuarter.slice(0,5).map(function(s){return s.key+' '+s.summary.slice(0,60);}).join(' | ')+(doneThisQuarter.length>5?' +'+( doneThisQuarter.length-5)+' more':'') : 'Done THIS QUARTER: none');
+    if(donePrior.length){
+      lines.push('Already done in a PRIOR quarter (do not count as this quarter\'s work): '+donePrior.slice(0,5).map(function(s){
+        var label = qsQuarterLabelForDate(s.resolutionDate) || 'an earlier quarter';
+        return s.key+' '+s.summary.slice(0,50)+' (completed '+label+')';
+      }).join(' | ')+(donePrior.length>5?' +'+( donePrior.length-5)+' more':''));
+    }
     if(inp.length) lines.push('In progress: '+inp.slice(0,4).map(function(s){return s.key+' ['+s.status+'] '+s.summary.slice(0,60);}).join(' | ')+(inp.length>4?' +'+( inp.length-4)+' more':''));
     if(out.length) lines.push('To do: '+out.slice(0,4).map(function(s){return s.key+' '+s.summary.slice(0,60);}).join(' | ')+(out.length>4?' +'+( out.length-4)+' more':''));
   }
@@ -3669,17 +3707,33 @@ function qsOverallTotals(themes) {
 // per call keeps every individual call tiny and fast regardless of how many
 // epics or themes exist; only the total call COUNT grows, and that's
 // handled by batching them, not by any one call taking longer.
+// Shared instruction used across every section of the executive report:
+// the bar isn't just "an exec can read this," it's "an exec could repeat
+// this out loud to their own team or the board without needing to explain
+// background first." That means standalone sentences, outcome/impact
+// framing instead of implementation detail, and zero internal jargon.
+var QS_EXPLAINABLE_RULE = 'Write so someone could read this aloud to a third party (their team, the board, a client) and be immediately understood — no internal jargon, no system/tool names, no acronyms, no dangling references to things not explained in the same sentence. Frame around outcomes and impact, not implementation (e.g. "made it faster for students to log in," not "refactored the auth middleware").';
+
 function buildQEpicPrompt(e) {
   var quarter = getActiveQuarter().label;
+  var hasPriorDone = /Already done in a PRIOR quarter/.test(qsEpicBlock(e));
   var lines = [];
-  lines.push('You are writing one entry in an executive-facing quarterly report for '+quarter+'. The reader is a non-technical executive, not an engineer.');
+  lines.push('You are writing one entry in an executive-facing quarterly report for '+quarter+'. The reader is a non-technical executive who will likely repeat this to someone else.');
   lines.push('Output exactly this pattern and nothing else — no preamble, no extra headers:');
   lines.push('');
   lines.push('**<Epic title> (<EPIC-KEY>)**');
-  lines.push('Completed: <one plain-language sentence on what was actually finished this quarter, based on the Done story titles below. If nothing is done yet, say so plainly.>');
-  lines.push('Remaining: <one plain-language sentence on what still needs to happen, based on the In progress / To do story titles below and their counts.>');
+  lines.push('Completed:');
+  lines.push('- <one bullet per distinct thing actually finished THIS QUARTER, based ONLY on the "Done THIS QUARTER" story titles below. If it says "none", use a single bullet saying nothing was completed this quarter yet.>');
+  if(hasPriorDone){
+    lines.push('Already completed (prior quarter):');
+    lines.push('- <one bullet per distinct item from the "Already done in a PRIOR quarter" line below, naming which quarter it was actually finished in.>');
+  }
+  lines.push('Remaining:');
+  lines.push('- <one bullet per distinct thing still left, based on the "In progress" and "To do" story titles below. Group closely related items into one bullet rather than listing every ticket.>');
   lines.push('');
-  lines.push('Rules: plain, jargon-free language an executive can understand at a glance. No raw ticket titles verbatim — paraphrase into outcomes (e.g. "Finished the new login screen," not "Fix login button z-index bug"). Keep each Completed/Remaining line to one sentence.');
+  lines.push('CRITICAL: only list something under Completed if it appears in the "Done THIS QUARTER" line below. Anything appearing under "In progress" or "To do" belongs under Remaining, never Completed, even if it sounds far along or nearly finished — in-progress work is not completed work. Anything under "Already done in a PRIOR quarter" belongs under "Already completed (prior quarter)", never under this quarter\'s Completed list.');
+  lines.push('');
+  lines.push('Rules: '+QS_EXPLAINABLE_RULE+' No raw ticket titles verbatim. Each bullet is one short, complete, standalone sentence — it should make sense on its own with no other context. Use 1-4 bullets per list — do not list every single ticket individually if there are many; group and summarize instead.');
   lines.push('');
   lines.push(qsEpicBlock(e));
   return lines.join('\n');
@@ -3716,18 +3770,18 @@ function qsRiskItems(themes) {
 }
 
 function buildQExecPrompt(totals, quarter) {
-  return 'Write the EXECUTIVE SUMMARY section (plain prose, 2-3 sentences, no markdown, no headers) of an executive quarterly report for '+quarter+'.\n\nOverall: '+totals.overallPct+'% complete \u2014 '+totals.totalDone+'/'+totals.totalStories+' stories done'+(totals.totalPts>0?' | '+totals.totalPtsDone+'/'+totals.totalPts+' story points':'')+'.';
+  return 'Write the EXECUTIVE SUMMARY section (plain prose, 2-3 sentences, no markdown, no headers) of an executive quarterly report for '+quarter+'. '+QS_EXPLAINABLE_RULE+'\n\nOverall: '+totals.overallPct+'% complete \u2014 '+totals.totalDone+'/'+totals.totalStories+' stories done'+(totals.totalPts>0?' | '+totals.totalPtsDone+'/'+totals.totalPts+' story points':'')+'.';
 }
 function buildQOutstandingPrompt(items, quarter) {
-  return 'Write the OUTSTANDING WORK section (plain prose paragraph, 3-5 sentences, no markdown, no headers) of an executive quarterly report for '+quarter+'. Summarize the most important incomplete items below into a readable paragraph, naming specific epic keys.\n\n'
+  return 'Write the OUTSTANDING WORK section (plain prose paragraph, 3-5 sentences, no markdown, no headers) of an executive quarterly report for '+quarter+'. Summarize the most important incomplete items below into a readable paragraph. '+QS_EXPLAINABLE_RULE+' You may reference epic keys in parentheses for traceability, but the sentence itself must stand on its own without them.\n\n'
     + (items.length ? items.slice(0,40).join('\n') : 'Nothing outstanding \u2014 everything tracked this quarter is complete.');
 }
 function buildQRisksPrompt(items, quarter) {
-  return 'Write the RISKS & BLOCKERS section (plain prose paragraph, 3-5 sentences, no markdown, no headers) of an executive quarterly report for '+quarter+'. Below are epics flagged at-risk or critical, with why. Summarize into a readable paragraph naming specific epic keys and recommended action.\n\n'
+  return 'Write the RISKS & BLOCKERS section (plain prose paragraph, 3-5 sentences, no markdown, no headers) of an executive quarterly report for '+quarter+'. Below are epics flagged at-risk or critical, with why. Summarize into a readable paragraph with a recommended action. '+QS_EXPLAINABLE_RULE+' You may reference epic keys in parentheses for traceability, but the sentence itself must stand on its own without them.\n\n'
     + (items.length ? items.slice(0,30).join('\n') : 'No epics are currently flagged at-risk.');
 }
 function buildQOutlookPrompt(totals, weeksRem, quarter) {
-  return 'Write the OUTLOOK section (plain prose paragraph, 2-4 sentences, no markdown, no headers) of an executive quarterly report for '+quarter+'. With '+weeksRem+' weeks remaining and '+totals.overallPct+'% complete overall, is the quarter on track? Be direct about what must happen to close any gap.';
+  return 'Write the OUTLOOK section (plain prose paragraph, 2-4 sentences, no markdown, no headers) of an executive quarterly report for '+quarter+'. With '+weeksRem+' weeks remaining and '+totals.overallPct+'% complete overall, is the quarter on track? Be direct about what must happen to close any gap. '+QS_EXPLAINABLE_RULE;
 }
 
 async function qsFetchSummary(title, description) {
@@ -3814,7 +3868,7 @@ async function generateQSummary(forceRegen) {
     var epicTextsPromise = qsRunInBatches(epicJobs, 8, function(job) {
       return qsFetchSummary(quarter + ' Quarterly Summary \u2014 ' + job.epic.key, buildQEpicPrompt(job.epic))
         .then(function(text){ return { themeName: job.theme.name, text: text }; })
-        .catch(function(e){ return { themeName: job.theme.name, text: '**'+job.epic.title+' ('+job.epic.key+')**\nCompleted: (summary failed: '+e.message+')\nRemaining: —' }; });
+        .catch(function(e){ return { themeName: job.theme.name, text: '**'+job.epic.title+' ('+job.epic.key+')**\nCompleted:\n- (summary failed: '+e.message+')\nRemaining:\n- \u2014' }; });
     });
 
     var results = await Promise.all([execPromise, outstandingPromise, risksPromise, outlookPromise, epicTextsPromise]);
