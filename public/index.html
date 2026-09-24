@@ -3655,28 +3655,56 @@ function qsEpicBlock(e) {
   lines.push('EPIC '+e.key+' ['+e.status+'] '+ep+'%: '+e.title);
   lines.push(s.done+' done, '+s.inprog+' in-progress/review/testing, '+(s.total-s.done-s.inprog)+' to do'+(s.ptsTotal>0?' | '+s.ptsDone+'/'+s.ptsTotal+' pts':'')+(function(){ var ri=computeEpicRisk(e); return ri.level ? ' | '+ri.level.toUpperCase()+(ri.reason?' ('+ri.reason+')':'') : ''; })());
   if(e.storyList&&e.storyList.length){
+    // Detecting "actually done" by Jira's status CATEGORY alone misses
+    // custom statuses this org uses that mean done but aren't necessarily
+    // categorized that way in Jira (e.g. "Ready For Production", "Shipped").
+    // The app already maintains its own status-name whitelist (DONE_ST) for
+    // exactly this reason elsewhere - reuse it here too, in addition to the
+    // category check, so nothing slips through either way.
+    // Cancelled is deliberately excluded from "done" here even though it's
+    // in DONE_ST elsewhere (where it's treated as "no longer outstanding"
+    // for progress math) - cancelled work was dropped, not delivered, and
+    // should never be described to an executive as something completed.
+    var QS_CANCELLED = ['Cancelled','Canceled'];
+    function qsIsCancelled(s){ return QS_CANCELLED.indexOf(s.status)>=0; }
+    function qsIsCompleted(s){
+      if(qsIsCancelled(s)) return false;
+      return isDone(s.status) || s.statusCat==='done';
+    }
+
     // An epic that carries over from a prior quarter keeps its FULL lifetime
     // story list, so "done" alone would include work finished before this
     // quarter started. Split into two buckets instead of silently dropping
-    // the older ones: done THIS quarter (by actual resolution date), and
-    // done in some prior quarter (named, when we can tell which one).
+    // the older ones: done THIS quarter (by completion date), and done in
+    // some prior quarter (named, when we can tell which one).
+    //
+    // Completion date = resolutionDate, falling back to updated - matching
+    // the same convention already used elsewhere in this file (see
+    // fetchEpicData). Jira's formal Resolution field is frequently left
+    // unset even when a story is genuinely done via a status-category
+    // transition, so requiring a true resolutionDate here was wrongly
+    // pushing real done-this-quarter stories into the "prior quarter"
+    // bucket whenever that field happened to be blank.
+    function completionDate(s){ return s.resolutionDate || s.updated || null; }
     var aq = getActiveQuarter();
     var qStart = aq && aq.start ? new Date(aq.start+'T00:00:00') : null;
     var qEnd = aq && aq.end ? new Date(aq.end+'T23:59:59') : null;
-    var allDone = e.storyList.filter(function(s){ return s.statusCat==='done'; });
+    var relevantStories = e.storyList.filter(function(s){ return !qsIsCancelled(s); }); // cancelled work is neither delivered nor pending - drop it from all three buckets
+    var allDone = relevantStories.filter(qsIsCompleted);
     var doneThisQuarter = [], donePrior = [];
     allDone.forEach(function(s){
-      if(!qStart || !qEnd || !s.resolutionDate){ donePrior.push(s); return; } // can't confirm this quarter - treat as prior/unknown, never assume
-      var rd = new Date(s.resolutionDate);
+      var cd = completionDate(s);
+      if(!qStart || !qEnd || !cd){ donePrior.push(s); return; } // genuinely no date on record at all - can't confirm, treat as prior/unknown
+      var rd = new Date(cd);
       if(rd >= qStart && rd <= qEnd) doneThisQuarter.push(s);
       else donePrior.push(s);
     });
-    var inp=e.storyList.filter(function(s){return s.statusCat==='indeterminate';});
-    var out=e.storyList.filter(function(s){return s.statusCat==='new';});
+    var inp=relevantStories.filter(function(s){ return !qsIsCompleted(s) && s.statusCat==='indeterminate'; });
+    var out=relevantStories.filter(function(s){ return !qsIsCompleted(s) && s.statusCat==='new'; });
     lines.push(doneThisQuarter.length ? 'Done THIS QUARTER: '+doneThisQuarter.slice(0,5).map(function(s){return s.key+' '+s.summary.slice(0,60);}).join(' | ')+(doneThisQuarter.length>5?' +'+( doneThisQuarter.length-5)+' more':'') : 'Done THIS QUARTER: none');
     if(donePrior.length){
       lines.push('Already done in a PRIOR quarter (do not count as this quarter\'s work): '+donePrior.slice(0,5).map(function(s){
-        var label = qsQuarterLabelForDate(s.resolutionDate) || 'an earlier quarter';
+        var label = qsQuarterLabelForDate(completionDate(s)) || 'an earlier quarter';
         return s.key+' '+s.summary.slice(0,50)+' (completed '+label+')';
       }).join(' | ')+(donePrior.length>5?' +'+( donePrior.length-5)+' more':''));
     }
