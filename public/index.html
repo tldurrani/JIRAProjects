@@ -242,6 +242,7 @@ function initFirebase(){
         } else {
           state.quarters=d.quarters;
           state.activeProjects=d.activeProjects||state.activeProjects;
+          if(d.plan){ state.plan=d.plan; if(typeof plPlanSynced==='function') plPlanSynced(); }
           var loadKey=d.activeQuarterKey&&state.quarters[d.activeQuarterKey]?d.activeQuarterKey:sortedQuarterKeys().pop()||null;
           if(loadKey) activeQuarterKey=loadKey;
           if(window.APP){ window.APP.renderAll(); renderQuarterSwitcher(); window.APP.setSyncBadge(true); }
@@ -486,7 +487,8 @@ document.addEventListener('DOMContentLoaded', initFirebase);
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn btn-ghost btn-sm" onclick="generateQSummary(false)" id="qs-gen-btn">&#10024; Generate AI Summary</button>
         <button class="btn btn-ghost btn-sm" onclick="generateQSummary(true)" id="qs-regen-btn" style="display:none">&#8635; Regenerate</button>
-        <button class="btn btn-ghost btn-sm" onclick="exportQSummary()" id="qs-export-btn" style="display:none">&#8595; Export</button>
+        <button class="btn btn-ghost btn-sm" onclick="qsCopyToClipboard()" id="qs-copy-btn" style="display:none">&#128203; Copy</button>
+        <button class="btn btn-ghost btn-sm" onclick="qsExportCSV()" id="qs-export-btn" style="display:none">&#8595; Export CSV</button>
       </div>
     </div>
 
@@ -780,97 +782,59 @@ document.addEventListener('DOMContentLoaded', initFirebase);
   <div id="tab-sprintplanning" class="tab-content"><div id="sp-root"></div></div>
 <div id="tab-planning" class="tab-content">
   <style>
-    .pl-sub-bar{display:flex;gap:0;border-bottom:0.5px solid var(--border);margin-bottom:18px}
-    .pl-sub-btn{padding:9px 16px;font-size:12px;font-family:var(--font-mono);text-transform:uppercase;letter-spacing:0.5px;color:var(--text3);border-bottom:2px solid transparent;cursor:pointer;background:none;border-top:none;border-left:none;border-right:none}
-    .pl-sub-btn.active{color:var(--blue);border-bottom-color:var(--blue)}
-    .pl-panel{display:none}.pl-panel.active{display:block}
-    .pl-metric-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px}
-    .pl-metric{background:var(--bg2);border:0.5px solid var(--border);border-radius:12px;padding:14px 16px}
-    .pl-metric-label{font-family:var(--font-mono);font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:0.8px;margin-bottom:5px}
-    .pl-metric-value{font-size:22px;font-weight:700}
-    .pl-metric-sub{font-size:11px;color:var(--text3);margin-top:3px}
-    .pl-card{background:var(--bg2);border:0.5px solid var(--border);border-radius:12px;overflow:hidden;margin-bottom:12px}
-    .pl-card-hdr{padding:13px 18px;border-bottom:0.5px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:12px;background:var(--bg3)}
-    .pl-card-title{font-size:14px;font-weight:600;color:var(--text)}
-    .pl-card-sub{font-size:12px;color:var(--text3);margin-top:2px}
-    .pl-tbl-hdr{display:grid;padding:7px 18px;border-bottom:0.5px solid var(--border);background:var(--bg3)}
-    .pl-tbl-hdr span{font-family:var(--font-mono);font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:0.6px}
-    .pl-tbl-row{display:grid;padding:12px 18px;border-bottom:0.5px solid rgba(255,255,255,0.04);align-items:start;font-size:13px}
-    .pl-tbl-row:last-child{border-bottom:none}
-    .pl-pbar-wrap{height:5px;background:var(--bg3);border-radius:3px;flex:1}
-    .pl-pbar{height:5px;border-radius:3px}
-    .pl-badge{display:inline-flex;align-items:center;gap:3px;font-size:10px;padding:2px 8px;border-radius:20px;font-weight:600;white-space:nowrap;font-family:var(--font-mono)}
-    .pl-badge-red{background:rgba(239,68,68,.12);color:#f87171;border:0.5px solid rgba(239,68,68,.3)}
-    .pl-badge-amber{background:rgba(245,158,11,.12);color:#fbbf24;border:0.5px solid rgba(245,158,11,.3)}
-    .pl-badge-green{background:rgba(16,185,129,.12);color:#34d399;border:0.5px solid rgba(16,185,129,.3)}
-    .pl-note-wrap{display:none;margin-top:8px}.pl-note-wrap.open{display:block}
-    .pl-note-input{width:100%;font-size:12px;padding:7px 10px;border-radius:6px;border:0.5px solid var(--border2);background:var(--bg3);color:var(--text);font-family:var(--font-sans);resize:none;outline:none}
-    .pl-note-btn{font-size:11px;color:var(--blue);background:none;border:none;cursor:pointer;padding:0;margin-top:5px}
-    .pl-assignee-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px;padding:14px 18px}
-    .pl-assignee-card{background:var(--bg3);border:0.5px solid var(--border);border-radius:10px;padding:13px 14px}
-    .pl-av{width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;flex-shrink:0;font-family:var(--font-mono)}
-    .pl-story{display:flex;align-items:flex-start;gap:7px;padding:5px 0;border-bottom:0.5px solid rgba(255,255,255,0.04);font-size:12px}
-    .pl-story:last-child{border-bottom:none}
-    .pl-story-dot{width:6px;height:6px;border-radius:50%;flex-shrink:0;margin-top:4px}
-    .pl-story-key{font-family:var(--font-mono);font-size:10px;color:var(--blue);min-width:68px;flex-shrink:0}
-    .pl-story-pts{font-family:var(--font-mono);font-size:10px;padding:1px 5px;border-radius:6px;background:var(--bg2);color:var(--text3);flex-shrink:0}
+    #tab-planning .plx-top{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px}
+    #tab-planning .plx-title{font-size:20px;font-weight:700;color:var(--text)}
+    #tab-planning .plx-sub{font-size:12px;color:var(--text3);margin-top:3px;line-height:1.5}
+    #tab-planning .plx-bottom{background:var(--bg2);border:0.5px solid var(--border);border-radius:12px;padding:14px 16px;font-size:13px;line-height:1.65;color:var(--text2);margin-bottom:14px}
+    #tab-planning .plx-card{background:var(--bg2);border:0.5px solid var(--border);border-radius:12px;overflow:hidden;margin-bottom:14px}
+    #tab-planning .plx-card-h{padding:13px 16px;border-bottom:0.5px solid var(--border);background:var(--bg3)}
+    #tab-planning .plx-card-t{font-size:14px;font-weight:600;color:var(--text)}
+    #tab-planning .plx-wrap{overflow-x:auto}
+    #tab-planning .plx-tbl{width:100%;border-collapse:collapse;font-size:12px}
+    #tab-planning .plx-tbl th{font-family:var(--font-mono);font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:var(--text3);text-align:left;padding:9px 12px;background:var(--bg3);border-bottom:0.5px solid var(--border);white-space:nowrap}
+    #tab-planning .plx-main th[data-s]{cursor:pointer;user-select:none}
+    #tab-planning .plx-tbl td{padding:9px 12px;border-bottom:0.5px solid rgba(255,255,255,0.05);vertical-align:top;color:var(--text2)}
+    #tab-planning .plx-tbl tr:last-child td{border-bottom:none}
+    #tab-planning .plx-main tbody tr td:first-child{border-left:3px solid var(--rail,transparent)}
+    #tab-planning .plx-num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+    #tab-planning .plx-tbl th.plx-num{text-align:right}
+    #tab-planning .plx-sum td{background:var(--bg3);color:var(--text);font-weight:600}
+    #tab-planning .plx-chip{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;white-space:nowrap}
+    #tab-planning .plx-ok{background:rgba(34,197,94,.14);color:#4ade80}
+    #tab-planning .plx-info{background:rgba(59,130,246,.15);color:#60a5fa}
+    #tab-planning .plx-warn{background:rgba(245,158,11,.15);color:#fbbf24}
+    #tab-planning .plx-bad{background:rgba(239,68,68,.15);color:#f87171}
+    #tab-planning .plx-neutral{background:rgba(148,163,184,.14);color:var(--text2)}
+    #tab-planning .plx-in{background:var(--bg3);border:0.5px solid var(--border2);color:var(--text);border-radius:6px;padding:5px 8px;font-size:12px;font-family:inherit;max-width:100%}
+    #tab-planning .plx-in:focus{outline:none;border-color:var(--blue)}
+    #tab-planning .plx-search{min-width:240px;flex:1;max-width:340px}
+    #tab-planning .plx-days{width:64px;text-align:right}
+    #tab-planning .plx-notes{width:300px;resize:vertical;line-height:1.4;font-size:11.5px}
+    #tab-planning .plx-bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:4px 0 10px}
+    #tab-planning .plx-stats{display:flex;gap:16px;flex-wrap:wrap;font-size:12px;color:var(--text3);margin:0 0 10px}
+    #tab-planning .plx-stats strong{color:var(--text)}
+    #tab-planning .plx-empty{padding:36px 16px;text-align:center;color:var(--text3);font-size:13px}
+    #tab-planning .plx-foot{font-size:12px;color:var(--text3);line-height:1.6;max-width:110ch;margin:10px 0 0}
+    #tab-planning .plx-foot a{color:var(--blue)}
+    #tab-planning .plx-mv{width:44px;white-space:nowrap}
+    #tab-planning .plx-mvb{background:transparent;border:0.5px solid var(--border2);color:var(--text3);border-radius:4px;font-size:9px;line-height:1;padding:4px 5px;cursor:pointer;margin-right:2px}
+    #tab-planning .plx-mvb:hover{color:var(--text);border-color:var(--text3)}
+    #tab-planning .plx-titlecell{min-width:280px;max-width:420px;color:var(--text)}
+    #tab-planning .plx-cap{font-size:10px;color:var(--text3);margin-top:3px}
+    #tab-planning .plx-arrow{margin-left:4px;color:var(--blue)}
+    #tab-planning .plx-main a{color:var(--blue);text-decoration:none;font-family:var(--font-mono);font-size:11px;white-space:nowrap}
+    #tab-planning .plx-assump summary{cursor:pointer;padding:12px 16px;font-size:13px;font-weight:600;color:var(--text);list-style:none}
+    #tab-planning .plx-assump summary::-webkit-details-marker{display:none}
+    #tab-planning .plx-assump summary::before{content:'\25B8';margin-right:8px;color:var(--text3)}
+    #tab-planning .plx-assump[open] summary::before{content:'\25BE'}
+    #tab-planning .plx-assump-body{padding:4px 16px 16px;border-top:0.5px solid var(--border)}
+    #tab-planning .plx-fields{display:flex;gap:14px;flex-wrap:wrap;margin-top:12px}
+    #tab-planning .plx-field{display:flex;flex-direction:column;gap:4px;font-size:11px;color:var(--text3);min-width:150px}
+    #tab-planning .plx-field em{font-style:normal;font-size:10px;color:var(--text3)}
+    @media (max-width:700px){#tab-planning .plx-search{max-width:none}}
   </style>
-  <div style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:18px">
-    <div>
-      <div style="font-family:var(--font-mono);font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.8px;margin-bottom:4px">Planning & Forecasting</div>
-      <h2 style="font-family:var(--font-display);font-size:22px;font-weight:700;margin-bottom:3px" id="pl-title">Q Planning</h2>
-      <div style="font-size:13px;color:var(--text3)" id="pl-meta">Points-based forecast by team</div>
-    </div>
-    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-      <div style="font-family:var(--font-mono);font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.8px">Label filter</div>
-      <div style="display:flex;align-items:center;gap:6px;background:var(--bg3);border:0.5px solid var(--border2);border-radius:8px;padding:5px 10px;min-height:34px;min-width:180px;flex-wrap:wrap" id="pl-label-tags">
-        <span style="font-size:12px;color:var(--text3);font-style:italic">No filter</span>
-      </div>
-      <button class="btn btn-ghost btn-sm" onclick="plClearLabels()" id="pl-label-clear" style="display:none;font-size:11px">Clear</button>
-      <input class="field-input" id="pl-label-input" type="text" placeholder="Label + Enter" style="font-size:12px;padding:5px 10px;width:150px" onkeydown="plAddLabelKey(event)">
-    </div>
-  </div>
-  <div class="pl-metric-grid" id="pl-metrics"></div>
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px">
-    <div class="pl-card"><div class="pl-card-hdr"><div><div class="pl-card-title">Velocity by theme</div><div class="pl-card-sub">Points per week</div></div></div><div id="pl-theme-vel-body"></div></div>
-    <div class="pl-card"><div class="pl-card-hdr"><div><div class="pl-card-title">Velocity by engineer</div><div class="pl-card-sub">Points per week vs team average</div></div></div><div id="pl-engineer-vel-body"></div></div>
-    <div class="pl-card" style="grid-column:1/-1"><div class="pl-card-hdr"><div><div class="pl-card-title">Velocity by team</div><div class="pl-card-sub">Points per week by Agile Team field</div></div></div><div id="pl-team-vel-body"></div></div>
-  </div>
-  <div style="background:rgba(59,130,246,0.06);border:0.5px solid rgba(59,130,246,0.2);border-radius:10px;padding:12px 16px;margin-bottom:16px;display:flex;align-items:flex-start;gap:10px">
-    <span style="font-size:16px;flex-shrink:0">&#8505;</span>
-    <div style="font-size:12px;color:var(--text2);line-height:1.6"><span style="color:var(--text);font-weight:600">How forecasts are calculated:</span> Each epic uses the actual velocity of its assigned engineers, not the team average.<span id="pl-label-note" style="display:none"> &middot; <span style="color:var(--blue)">Label filter active.</span></span></div>
-  </div>
-  <div class="pl-sub-bar">
-    <button class="pl-sub-btn active" onclick="plShowPanel('forecast',this)">Forecast</button>
-    <button class="pl-sub-btn" onclick="plShowPanel('workload',this)">Team Workload</button>
-    <button class="pl-sub-btn" onclick="plShowPanel('blockers',this)">Stale Stories</button>
-  </div>
-  <div class="pl-panel active" id="pl-panel-forecast">
-    <div class="pl-card">
-      <div class="pl-card-hdr"><div><div class="pl-card-title">Carry-forward forecast</div><div class="pl-card-sub" id="pl-forecast-sub">Loading...</div></div>
-      <select class="field-input" id="pl-theme-filter" style="width:auto;font-size:12px;padding:5px 10px" onchange="plRenderForecast()"><option value="">All themes</option></select></div>
-      <div class="pl-tbl-hdr" style="grid-template-columns:1fr 130px 110px 100px 110px"><span>Epic</span><span>Progress</span><span>Done</span><span>Remaining</span><span>Forecast</span></div>
-      <div id="pl-forecast-body"></div>
-    </div>
-  </div>
-  <div class="pl-panel" id="pl-panel-workload">
-    <div class="pl-card">
-      <div class="pl-card-hdr"><div><div class="pl-card-title">Team workload</div><div class="pl-card-sub">In-progress stories and points per engineer</div></div>
-      <div style="display:flex;align-items:center;gap:8px"><span style="font-size:12px;color:var(--text3)">Heavy load at</span><input type="number" id="pl-threshold" value="5" min="1" max="20" style="width:50px;text-align:center;font-size:12px;padding:4px 6px" onchange="plRenderWorkload()"><span style="font-size:12px;color:var(--text3)">active stories</span></div></div>
-      <div class="pl-assignee-grid" id="pl-workload-body"></div>
-    </div>
-  </div>
-  <div class="pl-panel" id="pl-panel-blockers">
-    <div class="pl-card">
-      <div class="pl-card-hdr"><div><div class="pl-card-title">Stale in-progress stories</div><div class="pl-card-sub">No status change past threshold</div></div>
-      <select class="field-input" id="pl-stale-days" style="width:auto;font-size:12px;padding:5px 10px" onchange="plRenderBlockers()"><option value="7">Stale &gt; 7 days</option><option value="14">Stale &gt; 14 days</option><option value="21">Stale &gt; 21 days</option></select></div>
-      <div style="display:grid;grid-template-columns:72px 1fr 60px 100px 80px;gap:12px;padding:7px 18px;border-bottom:0.5px solid var(--border);background:var(--bg3)">
-        <span style="font-family:var(--font-mono);font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:0.6px">Key</span><span style="font-family:var(--font-mono);font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:0.6px">Story</span><span style="font-family:var(--font-mono);font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:0.6px">Points</span><span style="font-family:var(--font-mono);font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:0.6px">Assignee</span><span style="font-family:var(--font-mono);font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:0.6px">Stale</span>
-      </div>
-      <div id="pl-blockers-body"></div>
-    </div>
-  </div>
-  </div>
+  <div id="pl-root"></div>
+</div>
   <div id="tab-settings" class="tab-content">
     <div style="max-width:580px">
       <div class="settings-card"><div class="settings-title">Firebase Status</div><div class="settings-desc">Themes and epics sync to Firestore in real time.</div><div id="firebase-status" style="font-family:var(--font-mono);font-size:11px;padding:10px 14px;background:var(--bg3);border-radius:8px;border:1px solid var(--border)">Checking...</div></div>
@@ -1106,6 +1070,9 @@ function setSyncBadge(live){
 }
 function persist(){
   var payload = { version:2, quarters:state.quarters, activeProjects:state.activeProjects, activeQuarterKey:activeQuarterKey, updatedAt:new Date().toISOString() };
+  // Capacity & Forecast assumptions ride along in the same document. Only added once it exists:
+  // Firestore rejects undefined field values, which would make every save fail. The JSON round trip strips any.
+  if(state.plan) payload.plan = JSON.parse(JSON.stringify(state.plan));
   try { localStorage.setItem('q2tracker_v3', JSON.stringify(payload)); } catch(e){}
   if (window.saveToFirestore) {
     window.saveToFirestore(payload).then(function(ok){ if(ok) setSyncBadge(true); });
@@ -3516,6 +3483,8 @@ function setQSMode(mode){
   renderQSummaryStatic();
   var wrap=document.getElementById('qs-narrative-wrap'); if(wrap) wrap.style.display='none';
   var regen=document.getElementById('qs-regen-btn'); if(regen) regen.style.display='none';
+  var copyBtn=document.getElementById('qs-copy-btn'); if(copyBtn) copyBtn.style.display='none';
+  var exportBtn=document.getElementById('qs-export-btn'); if(exportBtn) exportBtn.style.display='none';
   var gen=document.getElementById('qs-gen-btn'); if(gen) gen.style.display='inline-flex';
 }
 
@@ -3927,11 +3896,18 @@ async function generateQSummary(forceRegen) {
 
     if(result_summary_is_empty(combined)) throw new Error('AI returned an empty summary.');
 
+    // Kept for CSV export - the raw structured per-epic text, not just the
+    // final rendered HTML, so export doesn't have to re-parse markup back
+    // out of the page.
+    qsLastEpicResults = epicResults;
+    qsLastQuarterLabel = quarter;
+
     document.getElementById('qs-loading').style.display='none';
     document.getElementById('qs-narrative-wrap').style.display='block';
     document.getElementById('qs-narrative').innerHTML = mdToHtml(combined);
     document.getElementById('qs-gen-time').textContent = 'Generated '+new Date().toLocaleString();
     document.getElementById('qs-regen-btn').style.display='inline-flex';
+    document.getElementById('qs-copy-btn').style.display='inline-flex';
     document.getElementById('qs-export-btn').style.display='inline-flex';
     setStatus('Quarterly summary generated','ok');
   } catch(err) {
@@ -3946,33 +3922,62 @@ async function generateQSummary(forceRegen) {
 
 function result_summary_is_empty(s) { return !s || !s.replace(/[^a-zA-Z0-9]/g,'').length; }
 
-function exportQSummary() {
-  var title = document.getElementById('qs-title').textContent;
-  var narrative = document.getElementById('qs-narrative').textContent;
-  var themes = getActiveThemes();
-  var lines = [title, new Date().toLocaleDateString(), '',''];
+var qsLastEpicResults = null;   // [{themeName, text}] from the most recent successful generation - used by CSV export
+var qsLastQuarterLabel = '';
 
-  themes.forEach(function(t){
-    var epics=t.epics||[];
-    var totS=epics.reduce(function(a,e){ return a+((e.stories&&e.stories.total)||0); },0);
-    var dnS =epics.reduce(function(a,e){ return a+((e.stories&&e.stories.done)||0); },0);
-    var pct =totS>0?Math.round(dnS/totS*100):0;
-    lines.push(t.name.toUpperCase()+' — '+pct+'% ('+dnS+'/'+totS+' stories)');
-    epics.forEach(function(e){
-      var s=e.stories||{done:0,total:0};
-      var ep=s.total>0?Math.round(s.done/s.total*100):0;
-      lines.push('  '+e.key+' '+e.title+' — '+ep+'% — '+(s.total-s.done)+' outstanding ['+e.status+']');
-    });
-    lines.push('');
+// Pulls the epic title and the Completed / Already Completed (Prior
+// Quarter) / Remaining bullet lists back out of one epic's raw AI text, for
+// building clean CSV columns instead of dumping the whole markdown blob
+// into a single cell.
+function qsParseEpicText(text) {
+  var titleMatch = text.match(/^\*\*(.+?)\*\*/);
+  var title = titleMatch ? titleMatch[1] : '';
+  function extractSection(label) {
+    var re = new RegExp(label.replace(/[()]/g,'\\$&') + ':\\s*\\n((?:-.*(?:\\n|$))+)', 'i');
+    var m = text.match(re);
+    if(!m) return '';
+    return m[1].split('\n')
+      .map(function(l){ return l.replace(/^-\s*/,'').trim(); })
+      .filter(Boolean)
+      .join(' | ');
+  }
+  return {
+    title: title,
+    completed: extractSection('Completed'),
+    priorQuarter: extractSection('Already completed \\(prior quarter\\)'),
+    remaining: extractSection('Remaining'),
+  };
+}
+
+function qsExportCSV() {
+  if(!qsLastEpicResults || !qsLastEpicResults.length){ setStatus('Generate the summary first', 'error'); return; }
+  var header = ['Theme','Epic Key','Epic Title','Completed','Already Completed (Prior Quarter)','Remaining'];
+  var rows = [header];
+  qsLastEpicResults.forEach(function(r){
+    var keyMatch = r.text.match(/\(([A-Z][A-Z0-9]*-\d+)\)/);
+    var parsed = qsParseEpicText(r.text);
+    rows.push([r.themeName, keyMatch ? keyMatch[1] : '', parsed.title, parsed.completed, parsed.priorQuarter, parsed.remaining]);
   });
-
-  if(narrative){ lines.push('AI SUMMARY',''); lines.push(narrative); }
-
-  var blob = new Blob([lines.join('\n')], {type:'text/plain'});
+  var csv = rows.map(function(row){ return row.map(bugsCsvEscape).join(','); }).join('\r\n');
+  var blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
   var a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = title.replace(/\s+/g,'-')+'-Report.txt';
-  a.click();
+  var titlePart = (qsLastQuarterLabel || document.getElementById('qs-title').textContent || 'Quarterly-Summary').replace(/[^a-z0-9]+/gi,'-');
+  a.download = titlePart+'-Report.csv';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(a.href);
+}
+
+async function qsCopyToClipboard() {
+  var el = document.getElementById('qs-narrative');
+  var text = el ? el.innerText : '';
+  if(!text){ setStatus('Nothing to copy yet', 'error'); return; }
+  try {
+    await navigator.clipboard.writeText(text);
+    setStatus('Quarterly summary copied to clipboard', 'ok');
+  } catch(e) {
+    setStatus('Copy failed: '+e.message, 'error');
+  }
 }
 
 function renderQoQCharts(){
@@ -4525,295 +4530,782 @@ document.addEventListener('click', function(e){
 });
 
 // ══════════════════════════════════════════════════════════════════════════
-// PLANNING MODULE
+// PLANNING MODULE — Capacity & Forecast
+//
+// Answers one question: given the people we have and the sprints left in the
+// quarter, which open P0 / P1 / P2 tickets actually fit?
+//
+//  - Tickets come live from Jira: open tickets carrying a P0, P1 or P2 label.
+//    "P" is the PHASE of work (P0 first, P1 stretch, P2 deferred) - it is not
+//    the Jira Priority field.
+//  - Effort is in PERSON-DAYS. Where it comes from, in order of precedence:
+//      1. a number typed into this tab        (source: Edited)
+//      2. Jira story points x points-to-days   (source: Jira pts)
+//      3. the estimate used on the Q4 2026 Capacity & Forecast Confluence page
+//         (PL_SEED below)                      (source: Plan est.)
+//      4. a default size                       (source: Default)
+//    Every ticket's source is shown, so an estimate is never mistaken for data.
+//  - Capacity per lane = people x productive days per sprint x sprints left.
+//  - Each lane is filled in priority order, all P0 first, then P1, then P2.
+//    That fill decides each ticket's outlook: fits / stretch / partial / after.
+//  - A ticket counts once, under the single phase that carries its effort.
 // ══════════════════════════════════════════════════════════════════════════
-var plState = { notes:{}, labels:[] };
 
-function plOnTabOpen(){ plRenderLabelTags(); plRenderAll(); }
+var PL_INITIATIVES = ['Change Management','Production Ops & Observability','Legacy Reporting Recovery','Action-Button Rewrite'];
+var PL_INIT_COLORS = ['#2f6fde','#2e9e5b','#d98a00','#8a56c7'];
+var PL_PHASES = ['P0','P1','P2'];
+var PL_PLAN_PAGE = 'https://riversidejira.atlassian.net/wiki/spaces/LSPMDM/pages/1843986434';
+var PL_LS_KEY = 'dm_plan_v1';
 
-function plShowPanel(name,btn){
-  document.querySelectorAll('.pl-sub-btn').forEach(function(b){b.classList.remove('active');});
-  btn.classList.add('active');
-  document.querySelectorAll('.pl-panel').forEach(function(p){p.classList.remove('active');});
-  var panel=document.getElementById('pl-panel-'+name);
-  if(panel) panel.classList.add('active');
+// Lanes = who does the work. The ids are stable so a lane can be renamed
+// without breaking the seed's ticket-to-lane mapping.
+var PL_DEFAULT_LANES = [
+  { id:'devops',      name:'DevOps (2 engineers)',        team:'DevOps', initiatives:[], people:[{name:'Engineer 1',perSprint:6},{name:'Engineer 2',perSprint:6}] },
+  { id:'fabian',      name:'Fabian',                      team:'INDY',   initiatives:['Legacy Reporting Recovery'], people:[{name:'Fabian',perSprint:6}] },
+  { id:'ethan_brent', name:'Ethan / Brent',               team:'INDY',   initiatives:['Change Management','Production Ops & Observability'], people:[{name:'Ethan',perSprint:6},{name:'Brent',perSprint:5}] },
+  { id:'marc',        name:'Marc',                        team:'INDY',   initiatives:['Action-Button Rewrite'], people:[{name:'Marc',perSprint:5}] },
+  { id:'scoring',     name:'Scoring team (outside plan)', team:'INDY',   initiatives:[], people:[] }
+];
+
+// Days the whole team is out. Only entries that are still ahead (and inside the
+// quarter) reduce the sprints left, so they stop counting as they pass.
+// 1 sprint = 10 working days.
+var PL_DEFAULT_TIMEOFF = [
+  { label:'Thanksgiving', start:'2026-11-26', end:'2026-11-27', days:2 },
+  { label:'Winter break', start:'2026-12-24', end:'2026-12-31', days:4 }
+];
+
+// Per-ticket plan from the Q4 2026 Capacity & Forecast page.
+//   i = initiative index, d = person-days, l = lane id, t = team,
+//   o = priority (lower = earlier), ep = phase that carries the effort when a
+//   ticket has more than one phase label, n = dependency / note text.
+var PL_SEED = {"DEVO-1784":{"i":0,"d":5.0,"l":"devops","t":"DevOps","n":"Start first: unblocks DM-3713.","o":1},"DM-3713":{"i":0,"d":5.0,"l":"ethan_brent","t":"INDY","n":"Needs the DEVO-1784 runner; unblocks making the test check required.","o":2},"DM-3735":{"i":0,"d":4.0,"l":"ethan_brent","t":"INDY","n":"Jira assignee Paul Migdalen (DBA). Feeds DEVO-1790.","o":3},"DEVO-1790":{"i":0,"d":5.0,"l":"devops","t":"DevOps","n":"Not estimable until the DM-3735 test harness exists.","o":4},"DM-3734":{"i":0,"d":5.0,"l":"ethan_brent","t":"INDY","n":"Contract change with ITS; must ship no later than DM-3646.","o":5},"DEVO-1824":{"i":0,"d":3.0,"l":"devops","t":"DevOps","n":"Discovery; feeds DEVO-1786.","o":6},"DM-3733":{"i":0,"d":3.0,"l":"ethan_brent","t":"INDY","n":"Jira assignee Dan Cook; the PRD names the DBA (Paul).","o":7},"DEVO-1786":{"i":0,"d":6.0,"l":"devops","t":"DevOps","n":"Not estimable until DM-3733 and DEVO-1824 are done.","o":8},"DM-3745":{"i":0,"d":5.0,"l":"ethan_brent","t":"INDY","n":"AppConfig: QA profiles are empty, STAGE partial. Parent DM-3193 (Security & SOC 2 initiative). Added to the forecast Oct 14.","o":9},"DM-3827":{"i":0,"d":5.0,"l":"ethan_brent","t":"INDY","n":"AppConfig: PROD profiles; PROD keeps the provider off until cutover. Parent DM-3193. Added to the forecast Oct 14.","o":10},"DEVO-1787":{"i":0,"d":5.0,"l":"devops","t":"DevOps","n":"Must land before DM-3814 (enable AppConfig in production).","o":11},"DM-3814":{"i":0,"d":3.0,"l":"devops","t":"DevOps","n":"Needs DEVO-1787 first and a DaD severity call before Dec 15. Gates DM-3182, DM-3183 and the hard-coded credential tickets. Added to the forecast Oct 14.","o":12},"DM-3737":{"i":0,"d":4.0,"l":"ethan_brent","t":"INDY","n":"Jira assignee Marc; the plan assumes Ethan or Brent.","o":13},"DM-3730":{"i":0,"d":4.0,"l":"ethan_brent","t":"INDY","n":"In Testing.","o":14},"DM-3736":{"i":0,"d":3.0,"l":"ethan_brent","t":"INDY","n":"In Testing.","o":15},"DEVO-1882":{"i":0,"d":4.0,"l":"devops","t":"DevOps","n":"In progress (Mario Villegas). Only partly fits once the AppConfig chain is prioritised.","o":16},"DEVO-1789":{"i":0,"d":2.0,"l":"devops","t":"DevOps","n":"Documentation; slips behind the AppConfig chain.","o":17},"DM-3731":{"i":0,"d":5.0,"l":"ethan_brent","t":"INDY","n":"Liquibase for Dev/QA decided at PI Planning; Stage/Prod decision still open.","o":18},"DM-3744":{"i":0,"d":2.0,"l":"ethan_brent","t":"INDY","n":"Needs scoping; the native feature-flag design (DM-3793 epic) is the likely answer.","o":19},"DEVO-1841":{"i":0,"d":3.0,"l":"devops","t":"DevOps","n":"","o":20},"DEVO-1783":{"i":0,"d":20.0,"l":"devops","t":"DevOps","n":"Epic. Tech Ops lead time is on the critical path; stage infra billed twice during cutover.","o":21},"DM-3717":{"i":0,"d":15.0,"l":"ethan_brent","t":"INDY","n":"Only after the test runner exists. Unsized in Jira; 15 is a placeholder.","o":22},"DEVO-1814":{"i":1,"d":3.0,"l":"devops","t":"DevOps","n":"Start first: root cause needed before DM-3703.","o":23},"DEVO-1815":{"i":1,"d":4.0,"l":"devops","t":"DevOps","n":"Inventory env:live monitors, dashboards and SLOs first; stage before prod.","o":24},"DM-3704":{"i":1,"d":2.0,"l":"ethan_brent","t":"INDY","n":"Coordinate the exception-count monitor with DM-3727.","o":25},"DM-3705":{"i":1,"d":3.0,"l":"ethan_brent","t":"INDY","n":"Shares the Apdex decision with DM-3704.","o":26},"DM-3706":{"i":1,"d":3.0,"l":"ethan_brent","t":"INDY","n":"Needs a named owner; a DB certificate change is DaD-gated.","o":27},"DM-3643":{"i":1,"d":4.0,"l":"ethan_brent","t":"INDY","n":"Blocks DM-3632. Also on the P1 row (days counted here).","ep":"P0","o":28},"DM-3703":{"i":1,"d":4.0,"l":"ethan_brent","t":"INDY","n":"Starts after DEVO-1814 records root cause. Jira assignee Marc; the plan assumes Ethan or Brent.","o":29},"DM-3711":{"i":1,"d":1.0,"l":"ethan_brent","t":"INDY","n":"Delete monitors only after DM-3703 verifies the 9 kept ones.","o":30},"DM-3729":{"i":1,"d":1.0,"l":"ethan_brent","t":"INDY","n":"Slips: the Ethan/Brent lane is full once the AppConfig tickets are added.","o":31},"DM-3644":{"i":1,"d":1.0,"l":"ethan_brent","t":"INDY","n":"Jira assignee Brent. Unblocks DM-3727. Slips with the lane full; 1 day if squeezed in.","o":32},"DM-3646":{"i":1,"d":6.0,"l":"ethan_brent","t":"INDY","n":"Blocked by DM-3734 (student answer logging must stop first). Slips behind the AppConfig tickets.","o":33},"DM-3727":{"i":1,"d":3.0,"l":"ethan_brent","t":"INDY","n":"Depends on DM-3644.","o":34},"DM-3728":{"i":1,"d":3.0,"l":"ethan_brent","t":"INDY","n":"DevOps counterpart is DEVO-1810.","o":35},"DM-3182":{"i":1,"d":5.0,"l":"ethan_brent","t":"INDY","n":"Blocked until AppConfig is enabled in production (DM-3814, not tagged).","o":36},"DM-3707":{"i":1,"d":2.0,"l":"devops","t":"DevOps","n":"Jira assignee Dan Cook. Backup must precede the rehearsal. Slips behind the AppConfig chain.","o":37},"DM-3708":{"i":1,"d":0,"l":"scoring","t":"INDY","n":"Scoring DR work; not in this plan's capacity. After DM-3707.","o":38},"DM-3709":{"i":1,"d":0,"l":"scoring","t":"INDY","n":"Leadership decision after DM-3708.","o":39},"DEVO-1628":{"i":1,"d":5.0,"l":"devops","t":"DevOps","n":"On Hold. Must evaluate cost.","o":40},"DM-3800":{"i":1,"d":2.0,"l":"ethan_brent","t":"INDY","n":"","o":41},"DM-3801":{"i":1,"d":3.0,"l":"ethan_brent","t":"INDY","n":"","o":42},"DM-3743":{"i":1,"d":10.0,"l":"ethan_brent","t":"INDY","n":"Open policy question: where a declined advisory goes.","o":43},"DM-3742":{"i":1,"d":30.0,"l":"ethan_brent","t":"INDY","n":"Waiting on James Hulett's breakdown. 30 is a placeholder.","o":44},"DEVO-1812":{"i":2,"d":2.0,"l":"devops","t":"DevOps","n":"Stub. Licensing owner is Ray Mackie.","o":45},"DM-3688":{"i":2,"d":5.0,"l":"fabian","t":"INDY","n":"Assignee Fabian.","o":46},"DM-3766":{"i":2,"d":3.0,"l":"fabian","t":"INDY","n":"PRs must retarget onto the prod baseline, not DEV.","o":47},"DEVO-1802":{"i":2,"d":8.0,"l":"devops","t":"DevOps","n":"Umbrella story. Sub-tasks DEVO-1806 and DEVO-1808 are sized here.","o":48},"DEVO-1806":{"i":2,"d":0,"l":"devops","t":"DevOps","n":"Sub-task of DEVO-1802; days counted there.","o":49},"DEVO-1808":{"i":2,"d":0,"l":"devops","t":"DevOps","n":"Sub-task of DEVO-1802; days counted there. Reference the new Scoring base AMI.","o":50},"DEVO-1807":{"i":2,"d":4.0,"l":"devops","t":"DevOps","n":"Stub.","o":51},"DEVO-1803":{"i":2,"d":8.0,"l":"devops","t":"DevOps","n":"Input: DM-3767 file-share recommendation.","o":52},"DEVO-1805":{"i":2,"d":3.0,"l":"devops","t":"DevOps","n":"Needs DEVO-1802 and DEVO-1803 (Jira link direction looks reversed).","o":53},"DM-3767":{"i":2,"d":4.0,"l":"fabian","t":"INDY","n":"Input to DEVO-1803 and DEVO-1810.","o":54},"DM-3765":{"i":2,"d":5.0,"l":"fabian","t":"INDY","n":"","o":55},"DEVO-1810":{"i":2,"d":3.0,"l":"devops","t":"DevOps","n":"Related to DM-3728. Stub.","o":56},"DEVO-1811":{"i":2,"d":2.0,"l":"devops","t":"DevOps","n":"Stub. Ask Brent for the error details.","o":57},"DEVO-1813":{"i":2,"d":3.0,"l":"devops","t":"DevOps","n":"Inventory only.","o":58},"DM-3773":{"i":3,"d":1.0,"l":"marc","t":"INDY","n":"Outcome decides DM-3781.","o":59},"DM-3774":{"i":3,"d":3.0,"l":"marc","t":"INDY","n":"Hard gate for the DM-3635 deletion.","o":60},"DM-3635":{"i":3,"d":3.0,"l":"marc","t":"INDY","n":"Needs DM-3774 first. Scope expanded; needs re-estimating.","o":61},"DM-3632":{"i":3,"d":10.0,"l":"marc","t":"INDY","n":"Blocked by DM-3636 (not tagged) and DM-3643. Stage only before the Dec 15 DaD gate. Also on the P1 row.","ep":"P0","o":62},"DM-3775":{"i":3,"d":1.0,"l":"marc","t":"INDY","n":"Dependency-only change.","o":63},"DM-3637":{"i":3,"d":2.0,"l":"marc","t":"INDY","n":"Decides the single-district canary step.","o":64},"DM-3776":{"i":3,"d":4.0,"l":"marc","t":"INDY","n":"Blocks DM-3633: without it completion pushes are silently lost.","o":65},"DM-3633":{"i":3,"d":8.0,"l":"marc","t":"INDY","n":"Blocked by DM-3636; after DM-3632.","o":66},"DM-3634":{"i":3,"d":8.0,"l":"marc","t":"INDY","n":"After DM-3632.","o":67},"DM-3777":{"i":3,"d":5.0,"l":"marc","t":"INDY","n":"Client half of the RPC Admin ashx.","o":68},"DM-3779":{"i":3,"d":3.0,"l":"marc","t":"INDY","n":"Depends on DM-3634. Also on the P0 row.","ep":"P1","o":69},"DM-3778":{"i":3,"d":5.0,"l":"marc","t":"INDY","n":"Goes last, after DM-3777 has soaked.","o":70},"DM-3780":{"i":3,"d":6.0,"l":"marc","t":"INDY","n":"Only after full soak; both host builds drop together.","o":71},"DM-3781":{"i":3,"d":3.0,"l":"marc","t":"INDY","n":"Conditional on the DM-3773 outcome.","o":72},"DM-3782":{"i":3,"d":1.0,"l":"marc","t":"INDY","n":"After DM-3779. Also on the P0 row.","ep":"P2","o":73}};
+
+// Status names that mean the work is finished, or that it was dropped. Matching
+// is case-insensitive, and Jira's status category is checked as well.
+var PL_DONE_NAMES    = ['done','shipped','ready for production','ready to ship','resolved','closed'];
+var PL_DROPPED_NAMES = ['cancelled','canceled','postponed'];
+
+var plState = {
+  loaded:false, loading:false, error:null, loadedAt:null,
+  tickets:[], calc:null,
+  filters:{ q:'', lane:'', phase:'', initiative:'', outlook:'' },
+  sort:null,            // null = fill order; otherwise { key, dir }
+  assumpOpen:false
+};
+
+// Restore this browser's copy of the plan. Firestore (when connected) can
+// replace it later via plPlanSynced().
+(function(){
+  try{
+    var raw = localStorage.getItem(PL_LS_KEY);
+    if(raw){ var p = JSON.parse(raw); if(p && p.lanes) state.plan = p; }
+  }catch(e){}
+})();
+
+// ── Plan (the user-editable assumptions) ───────────────────────────────────
+function plDefaultPlan(){
+  return {
+    v:1,
+    lanes: JSON.parse(JSON.stringify(PL_DEFAULT_LANES)),
+    sprintsOverride: null,   // null = work it out from the quarter's dates
+    timeOff: JSON.parse(JSON.stringify(PL_DEFAULT_TIMEOFF)),   // see PL_DEFAULT_TIMEOFF
+    defaultDays: 4,          // size used when there are no points and no plan estimate
+    pointsToDays: 1,         // person-days per Jira story point
+    projects: ['DM','DEVO'],
+    overrides: {},           // ticket key -> { days, notes, lane, initiative }
+    prio: {}                 // ticket key -> priority within its lane + phase
+  };
+}
+function plEnsurePlan(){
+  if(!state.plan || !state.plan.lanes) state.plan = plDefaultPlan();
+  var p = state.plan;
+  if(!p.overrides) p.overrides = {};
+  if(!p.prio) p.prio = {};
+  if(!Array.isArray(p.projects)) p.projects = ['DM','DEVO'];
+  if(p.defaultDays == null) p.defaultDays = 4;
+  if(p.pointsToDays == null) p.pointsToDays = 1;
+  if(!Array.isArray(p.timeOff)) p.timeOff = [];
+  return p;
+}
+function plSave(){
+  try{ localStorage.setItem(PL_LS_KEY, JSON.stringify(state.plan)); }catch(e){}
+  persist();   // persist() writes state.plan into the shared Firestore document
+}
+// Called when Firestore delivers a newer plan.
+function plPlanSynced(){
+  try{ localStorage.setItem(PL_LS_KEY, JSON.stringify(state.plan)); }catch(e){}
+  var t = document.getElementById('tab-planning');
+  if(t && t.classList.contains('active')) plRenderAll();
 }
 
-function plGetLabels(){ return plState.labels; }
-
-function plAddLabelKey(e){
-  if(e.key!=='Enter') return;
-  var input=document.getElementById('pl-label-input');
-  var val=(input.value||'').trim();
-  if(!val||plState.labels.indexOf(val)>=0){input.value='';return;}
-  plState.labels.push(val); input.value='';
-  plRenderLabelTags(); plRenderAll();
+// ── Small helpers ──────────────────────────────────────────────────────────
+function plFmt(n){ return String(Math.round((Number(n)||0)*10)/10); }
+function plShortQuarter(){
+  var l = ((getActiveQuarter()||{}).label || '').trim();
+  return l.split(/\s+/)[0] || 'Quarter';
 }
-function plRemoveLabel(i){ plState.labels.splice(i,1); plRenderLabelTags(); plRenderAll(); }
-function plClearLabels(){ plState.labels=[]; plRenderLabelTags(); plRenderAll(); }
+function plStatusKind(status, cat){
+  var s = String(status||'').trim().toLowerCase();
+  if(PL_DROPPED_NAMES.indexOf(s) >= 0) return 'dropped';
+  if(PL_DONE_NAMES.indexOf(s) >= 0 || cat === 'done') return 'done';
+  return 'open';
+}
+function plOutlookLabel(code){
+  var q = plShortQuarter();
+  var m = { fit:q, stretch:q+' stretch', partial:'Partial in '+q, after:'After '+q, blocked:'Blocked', outside:'Outside plan', nolane:'No lane' };
+  return m[code] || code;
+}
+var PL_OUTLOOK_RANK = { fit:0, stretch:1, partial:2, after:3, blocked:4, outside:5, nolane:6 };
+function plInitColor(name){
+  var i = PL_INITIATIVES.indexOf(name);
+  return i >= 0 ? PL_INIT_COLORS[i] : '#64748b';
+}
+function plPeopleToText(people){
+  return (people||[]).map(function(p){ return p.name+':'+p.perSprint; }).join(', ');
+}
+function plTextToPeople(s){
+  return String(s||'').split(',').map(function(x){
+    x = x.trim(); if(!x) return null;
+    var i = x.lastIndexOf(':');
+    var name = i >= 0 ? x.slice(0,i).trim() : x;
+    var d = i >= 0 ? Number(x.slice(i+1)) : 6;
+    return { name: name || 'Person', perSprint: isNaN(d) ? 6 : Math.max(0,d) };
+  }).filter(Boolean);
+}
+function plKeyNum(k){ return parseInt(String(k).replace(/\D+/g,''),10) || 0; }
 
-function plRenderLabelTags(){
-  var wrap=document.getElementById('pl-label-tags'),clr=document.getElementById('pl-label-clear');
-  if(!wrap) return;
-  if(!plState.labels.length){
-    wrap.innerHTML='<span style="font-size:12px;color:var(--text3);font-style:italic">No filter</span>';
-    if(clr) clr.style.display='none'; return;
+// Working days of team time off that are still ahead of us this quarter. An
+// entry that is partly over only counts for the part still to come, and
+// anything after the quarter's last day is ignored.
+function plTimeOffDays(plan, from, end){
+  var total = 0, DAY = 864e5;
+  (plan.timeOff || []).forEach(function(t){
+    var e = t.end ? new Date(t.end + 'T23:59:59') : null;
+    if(!e || isNaN(e.getTime()) || e < from) return;                 // already over
+    var st = t.start ? new Date(t.start + 'T00:00:00') : null;
+    if(!st || isNaN(st.getTime())) st = new Date(e.getFullYear(), e.getMonth(), e.getDate());
+    if(st > end) return;                                             // after this quarter
+    var span = Math.max(DAY, e - st);
+    var ahead = Math.max(0, (e > end ? end : e) - (st > from ? st : from));
+    total += Math.max(0, Number(t.days) || 0) * Math.min(1, ahead / span);
+  });
+  return total;
+}
+// Full sprints left in the quarter: from the quarter's dates less upcoming time
+// off, unless a number has been typed in.
+function plSprintInfo(plan){
+  var aq = getActiveQuarter();
+  var manual = plan.sprintsOverride != null && plan.sprintsOverride !== '' && !isNaN(Number(plan.sprintsOverride));
+  var auto = 0, off = 0;
+  if(aq && aq.start && aq.end){
+    var start = new Date(aq.start + 'T00:00:00'), end = new Date(aq.end + 'T23:59:59'), now = new Date();
+    var from = now > start ? now : start;
+    var weeks = Math.max(0, (end - from) / (7*864e5));
+    off = plTimeOffDays(plan, from, end);
+    auto = Math.max(0, Math.round((weeks/2 - off/10) * 10) / 10);
   }
-  if(clr) clr.style.display='';
-  wrap.innerHTML=plState.labels.map(function(lbl,i){
-    return '<span style="display:inline-flex;align-items:center;gap:4px;background:rgba(59,130,246,0.12);border:0.5px solid rgba(59,130,246,0.3);border-radius:12px;padding:2px 8px;font-size:11px;color:#60a5fa;font-family:var(--font-mono)">'+escHtml(lbl)+'<span onclick="plRemoveLabel('+i+')" style="cursor:pointer;color:#94a3b8;font-size:13px">&times;</span></span>';
-  }).join('');
+  return { sprints: manual ? Math.max(0, Number(plan.sprintsOverride)) : auto, auto:auto, timeOffDays:off, manual:manual };
+}
+function plSprintsLeft(plan){ return plSprintInfo(plan).sprints; }
+
+// Which lane a ticket belongs to when the seed doesn't say.
+function plDeriveLane(lanes, team, initiative){
+  var byInit = lanes.filter(function(l){ return l.team === team && l.initiatives && l.initiatives.indexOf(initiative) >= 0; })[0];
+  if(byInit) return byInit.id;
+  var general = lanes.filter(function(l){ return l.team === team && (!l.initiatives || !l.initiatives.length) && l.people && l.people.length; })[0];
+  return general ? general.id : '';
 }
 
-function plFilterStories(sl){
-  var labels=plGetLabels();
-  if(!labels.length) return sl||[];
-  return (sl||[]).filter(function(s){ var sl2=s.labels||[]; return labels.some(function(lbl){return sl2.indexOf(lbl)>=0;}); });
+// ── Loading from Jira ──────────────────────────────────────────────────────
+function plMapIssue(i){
+  var f = i.fields || {};
+  var pts = f.customfield_10033;
+  return {
+    key: i.key,
+    project: i.key.split('-')[0],
+    title: (f.summary||'').trim(),
+    status: (f.status && f.status.name) || '',
+    statusCat: (f.status && f.status.statusCategory && f.status.statusCategory.key) || 'new',
+    type: (f.issuetype && f.issuetype.name) || '',
+    labels: f.labels || [],
+    assignee: (f.assignee && f.assignee.displayName) || 'Unassigned',
+    points: (typeof pts === 'number') ? pts : 0,
+    team: (f.customfield_10039 && f.customfield_10039.value) || '',
+    epicKey: (f.parent && f.parent.key) || '',
+    epicName: (f.parent && f.parent.fields && f.parent.fields.summary) || ''
+  };
 }
 
-function plEpicPts(epic){
-  var sl=plFilterStories(epic.storyList), labels=plGetLabels();
-  if(!labels.length && (!epic.storyList||!epic.storyList.length)){
-    return { done:(epic.stories&&epic.stories.ptsDone)||0, total:(epic.stories&&epic.stories.ptsTotal)||0, rem:Math.max(0,((epic.stories&&epic.stories.ptsTotal)||0)-((epic.stories&&epic.stories.ptsDone)||0)), hasPoints:!!(epic.stories&&epic.stories.ptsTotal) };
+async function plLoad(){
+  if(plState.loading) return;
+  var plan = plEnsurePlan();
+  plState.loading = true; plState.error = null;
+  plRenderAll();
+  try{
+    var proj = plan.projects.length
+      ? ' AND project in (' + plan.projects.map(function(p){ return '"'+String(p).replace(/"/g,'\\"')+'"'; }).join(',') + ')'
+      : '';
+    var jql = 'labels in (P0, P1, P2) AND statusCategory != Done' + proj + ' ORDER BY key ASC';
+    var fields = 'summary,status,issuetype,labels,assignee,parent,customfield_10033,customfield_10039';
+    var all = [], startAt = 0, pageSize = 100, guard = 0, nextPageToken = null;
+    while(guard < 20){
+      var qs = '/rest/api/3/search/jql?jql='+encodeURIComponent(jql)+'&fields='+fields+'&maxResults='+pageSize
+        + (nextPageToken ? ('&nextPageToken='+encodeURIComponent(nextPageToken)) : ('&startAt='+startAt));
+      var resp = await jiraGet(qs);
+      var page = resp.issues || [];
+      all = all.concat(page); guard++;
+      nextPageToken = resp.nextPageToken || null;
+      startAt += page.length;
+      var moreByToken = !!nextPageToken;
+      var moreByTotal = (typeof resp.total === 'number') && all.length < resp.total;
+      var moreByFull  = !moreByToken && typeof resp.total !== 'number' && page.length === pageSize;
+      if(!page.length || (!moreByToken && !moreByTotal && !moreByFull)) break;
+    }
+    plState.tickets = all.map(plMapIssue);
+    plState.loaded = true; plState.loadedAt = new Date();
+  }catch(e){
+    console.error('plLoad:', e);
+    plState.error = e.message;
   }
-  var done=sl.filter(function(s){return s.statusCat==='done';}).reduce(function(a,s){return a+(s.points||0);},0);
-  var total=sl.reduce(function(a,s){return a+(s.points||0);},0);
-  return { done:done, total:total, rem:Math.max(0,total-done), hasPoints:total>0 };
+  plState.loading = false;
+  plRenderAll();
 }
 
-function plBuildTeamMap(){
-  var map={};
-  getActiveThemes().forEach(function(t){
-    (t.epics||[]).forEach(function(e){
-      plFilterStories(e.storyList).forEach(function(s){
-        var name=(s.assignee&&s.assignee!=='Unassigned')?s.assignee:null; if(!name) return;
-        if(!map[name]) map[name]={donePts:0,inprogPts:0,todoPts:0,doneStories:0,inprogStories:0,stories:[]};
-        var pts=s.points||0, cat=s.statusCat==='done'?'done':(s.statusCat==='indeterminate'?'inprog':'todo');
-        if(cat==='done'){map[name].donePts+=pts;map[name].doneStories++;}
-        if(cat==='inprog'){map[name].inprogPts+=pts;map[name].inprogStories++;}
-        if(cat==='todo') map[name].todoPts+=pts;
-        map[name].stories.push(s);
-      });
+function plOnTabOpen(){
+  if(!plState.loaded && !plState.loading) plLoad();
+  else plRenderAll();
+}
+
+// ── The model: tickets -> rows -> forecast ─────────────────────────────────
+function plBuildRows(){
+  var plan = plEnsurePlan(), rows = [], doneCount = 0, droppedCount = 0;
+  plState.tickets.forEach(function(t){
+    var kind = plStatusKind(t.status, t.statusCat);
+    if(kind === 'done'){ doneCount++; return; }
+    if(kind === 'dropped'){ droppedCount++; return; }
+    var phases = PL_PHASES.filter(function(p){ return t.labels.indexOf(p) >= 0; });
+    if(!phases.length) return;
+    var seed = PL_SEED[t.key] || null, ov = plan.overrides[t.key] || {};
+
+    // A ticket with several phase labels counts once, under the phase that
+    // carries its effort (the seed says which; otherwise the highest phase).
+    var phase = (seed && seed.ep && phases.indexOf(seed.ep) >= 0) ? seed.ep : phases[0];
+
+    var days, source;
+    if(ov.days != null && ov.days !== ''){ days = Number(ov.days); source = 'edited'; }
+    else if(t.points > 0){ days = t.points * plan.pointsToDays; source = 'points'; }
+    else if(seed && seed.d != null){ days = seed.d; source = 'plan'; }
+    else { days = /^epic$/i.test(t.type) ? 0 : plan.defaultDays; source = 'default'; }
+
+    var team = seed ? seed.t : (t.project === 'DEVO' ? 'DevOps' : (t.team || 'INDY'));
+    var initiative = ov.initiative || (seed ? PL_INITIATIVES[seed.i] : '') || t.epicName || 'Other';
+    var laneId = ov.lane || (seed ? seed.l : '') || plDeriveLane(plan.lanes, team, initiative);
+    var order = (plan.prio[t.key] != null) ? plan.prio[t.key] : (seed ? seed.o : 100000 + plKeyNum(t.key));
+    var notes = (ov.notes != null) ? ov.notes : (seed ? seed.n : '');
+
+    rows.push({
+      key:t.key, title:t.title, status:t.status, statusCat:t.statusCat, type:t.type,
+      assignee:t.assignee, epicName:t.epicName, link:'https://riversidejira.atlassian.net/browse/'+t.key,
+      phase:phase, phases:phases, days:days, source:source, team:team, initiative:initiative,
+      laneId:laneId, order:order, notes:notes,
+      blocked: String(t.status||'').toLowerCase() === 'blocked',
+      // filled in by plForecast:
+      laneKey:'', laneName:'', outlook:'', cum:0, rank:0
     });
   });
-  return map;
+  return { rows:rows, doneCount:doneCount, droppedCount:droppedCount };
 }
 
-function plCalcVelocity(){
-  var aq=getActiveQuarter(), we=Math.max(1,(new Date()-new Date(aq.start))/(7*864e5)), pts=0;
-  getActiveThemes().forEach(function(t){ (t.epics||[]).forEach(function(e){ pts+=plEpicPts(e).done; }); });
-  return Math.round((pts/we)*10)/10;
+function plByPhaseThenOrder(a, b){
+  return (PL_PHASES.indexOf(a.phase) - PL_PHASES.indexOf(b.phase))
+      || (a.order - b.order)
+      || (plKeyNum(a.key) - plKeyNum(b.key));
+}
+
+// Fill each lane's capacity in priority order (P0 first, then P1, then P2).
+// Mutates each row's outlook / cum / rank and returns one summary per lane.
+function plForecast(rows, lanes, sprintsLeft){
+  var laneById = {};
+  lanes.forEach(function(l){ laneById[l.id] = l; });
+  var groups = {};
+  rows.forEach(function(r){
+    r.laneKey = laneById[r.laneId] ? r.laneId : '__none';
+    r.laneName = laneById[r.laneId] ? laneById[r.laneId].name : 'No lane';
+    (groups[r.laneKey] = groups[r.laneKey] || []).push(r);
+  });
+  var ids = lanes.map(function(l){ return l.id; });
+  if(groups.__none) ids.push('__none');
+
+  return ids.map(function(id){
+    var lane = laneById[id] || { id:'__none', name:'No lane assigned', team:'', people:[] };
+    var perSprint = (lane.people||[]).reduce(function(a,p){ return a + (Number(p.perSprint)||0); }, 0);
+    var capacity = laneById[id] ? Math.round(perSprint * sprintsLeft * 10) / 10 : 0;
+    var list = (groups[id] || []).slice().sort(plByPhaseThenOrder);
+    var eff = { P0:0, P1:0, P2:0 }, n = { P0:0, P1:0, P2:0 };
+    var remaining = capacity, cum = 0, rank = {};
+    list.forEach(function(r){
+      eff[r.phase] += r.days; n[r.phase]++;
+      rank[r.phase] = (rank[r.phase]||0) + 1; r.rank = rank[r.phase];
+      if(id === '__none'){ r.outlook = 'nolane'; r.cum = 0; return; }
+      if(capacity <= 0){ r.outlook = 'outside'; r.cum = 0; return; }
+      if(r.blocked){ r.outlook = 'blocked'; r.cum = cum; return; }   // can't be worked, so it doesn't use capacity
+      if(r.days <= 0){ r.outlook = (r.phase === 'P0') ? 'fit' : (remaining > 0 ? 'stretch' : 'after'); r.cum = cum; return; }
+      if(remaining >= r.days){ r.outlook = (r.phase === 'P0') ? 'fit' : 'stretch'; remaining -= r.days; cum += r.days; }
+      else if(remaining > 0){ r.outlook = 'partial'; cum += remaining; remaining = 0; }
+      else { r.outlook = 'after'; }
+      r.cum = Math.round(cum*10)/10;
+    });
+    return { lane:lane, capacity:capacity, eff:eff, n:n, left: Math.round((capacity - eff.P0)*10)/10 };
+  });
+}
+
+function plCompute(){
+  var plan = plEnsurePlan();
+  var built = plBuildRows();
+  var info = plSprintInfo(plan), sprints = info.sprints;
+  var summaries = plForecast(built.rows, plan.lanes, sprints);
+  var bySource = { points:0, plan:0, 'default':0, edited:0 };
+  built.rows.forEach(function(r){ bySource[r.source]++; });
+  return { rows:built.rows, summaries:summaries, sprints:sprints, timeOffDays:info.timeOffDays,
+           doneCount:built.doneCount, droppedCount:built.droppedCount, bySource:bySource };
+}
+
+function plVerdict(s){
+  var total = s.eff.P0 + s.eff.P1 + s.eff.P2;
+  if(s.capacity <= 0) return total > 0 ? 'No capacity assigned' : '';
+  if(s.eff.P0 > s.capacity) return 'P0 short by ' + plFmt(s.eff.P0 - s.capacity) + ' days';
+  var left = s.capacity - s.eff.P0;
+  if(left >= s.eff.P1 + s.eff.P2) return 'Everything fits';
+  if(left >= s.eff.P1) return 'P0 and P1 fit';
+  return 'P0 fits; ' + plFmt(left) + ' of ' + plFmt(s.eff.P1) + ' P1 days fit';
+}
+
+// One-paragraph summary at the top of the page.
+function plBottomLine(calc){
+  var q = plShortQuarter(), rows = calc.rows;
+  var count = function(ph, codes){
+    return rows.filter(function(r){ return r.phase === ph && codes.indexOf(r.outlook) >= 0; }).length;
+  };
+  var n0 = rows.filter(function(r){ return r.phase === 'P0'; }).length;
+  var n1 = rows.filter(function(r){ return r.phase === 'P1'; }).length;
+  var n2 = rows.filter(function(r){ return r.phase === 'P2'; }).length;
+  var parts = [];
+
+  if(!n0) parts.push('No open P0 tickets.');
+  else {
+    var short = count('P0', ['partial','after','outside','nolane']);
+    var blocked = count('P0', ['blocked']);
+    if(!short) parts.push('All ' + n0 + ' open P0 tickets fit in ' + q + ' on current capacity' + (blocked ? ' (' + blocked + ' blocked)' : '') + '.');
+    else {
+      var lanesShort = calc.summaries.filter(function(s){ return s.eff.P0 > s.capacity; }).map(function(s){ return s.lane.name; });
+      parts.push(short + ' of ' + n0 + ' open P0 tickets do not fit in ' + q + '.' + (lanesShort.length ? ' Short on P0 capacity: ' + lanesShort.join('; ') + '.' : ''));
+    }
+  }
+  if(n1){
+    var f1 = count('P1', ['stretch']), p1 = count('P1', ['partial']);
+    parts.push('About ' + (f1 + p1) + ' of ' + n1 + ' P1 tickets fit' + (p1 ? ' (' + p1 + ' only partly)' : '') + '.');
+  }
+  if(n2){
+    var f2 = count('P2', ['stretch','partial']);
+    parts.push(f2 ? f2 + ' of ' + n2 + ' P2 tickets fit.' : 'No P2 work fits in ' + q + '.');
+  }
+  var est = calc.bySource.plan + calc.bySource['default'];
+  var total = rows.length;
+  if(total) parts.push(est + ' of ' + total + ' tickets use an estimate rather than Jira points, so treat the effort figures as estimates.');
+  return parts.join(' ');
+}
+
+// ── Editing handlers ───────────────────────────────────────────────────────
+function plCleanOverride(key){
+  var ov = state.plan.overrides[key];
+  if(ov && Object.keys(ov).length === 0) delete state.plan.overrides[key];
+}
+function plSetDays(key, val){
+  var plan = plEnsurePlan(), ov = plan.overrides[key] || (plan.overrides[key] = {});
+  var s = String(val).trim();
+  if(s === '' || isNaN(Number(s))) delete ov.days; else ov.days = Math.max(0, Number(s));
+  plCleanOverride(key); plSave(); plRenderAll();
+}
+function plSetNotes(key, val){
+  var plan = plEnsurePlan(), ov = plan.overrides[key] || (plan.overrides[key] = {});
+  ov.notes = String(val);
+  plSave(); plRenderAll();
+}
+function plSetLane(key, val){
+  var plan = plEnsurePlan(), ov = plan.overrides[key] || (plan.overrides[key] = {});
+  ov.lane = val;
+  plSave(); plRenderAll();
+}
+function plMove(key, dir){
+  var calc = plState.calc; if(!calc || plState.sort) return;
+  var plan = plEnsurePlan();
+  var row = calc.rows.filter(function(r){ return r.key === key; })[0]; if(!row) return;
+  var same = function(r){ return r.laneKey === row.laneKey && r.phase === row.phase; };
+  // Number the whole group 1..n first so the swap below is unambiguous.
+  calc.rows.filter(same).sort(plByPhaseThenOrder).forEach(function(r, i){ plan.prio[r.key] = i + 1; });
+  var vis = plVisibleRows().filter(same);
+  var idx = vis.map(function(r){ return r.key; }).indexOf(key);
+  var swap = dir === 'up' ? idx - 1 : idx + 1;
+  if(idx < 0 || swap < 0 || swap >= vis.length) { plSave(); plRenderAll(); return; }
+  var a = vis[idx].key, b = vis[swap].key, t = plan.prio[a];
+  plan.prio[a] = plan.prio[b]; plan.prio[b] = t;
+  plSave(); plRenderAll();
+}
+function plSetNum(field, val){
+  var plan = plEnsurePlan(), s = String(val).trim();
+  if(field === 'sprintsOverride'){
+    plan.sprintsOverride = (s === '' || isNaN(Number(s))) ? null : Math.max(0, Number(s));
+  } else if(s !== '' && !isNaN(Number(s))){
+    plan[field] = Math.max(0, Number(s));
+  }
+  plSave(); plRenderAll();
+}
+function plSetTimeOff(i, field, val){
+  var t = plEnsurePlan().timeOff[i]; if(!t) return;
+  if(field === 'days') t.days = Math.max(0, Number(val) || 0);
+  else t[field] = String(val).trim();
+  plSave(); plRenderAll();
+}
+function plAddTimeOff(){
+  var aq = getActiveQuarter() || {};
+  plEnsurePlan().timeOff.push({ label:'Time off', start:aq.end || '', end:aq.end || '', days:1 });
+  plState.assumpOpen = true; plSave(); plRenderAll();
+}
+function plRemoveTimeOff(i){
+  plEnsurePlan().timeOff.splice(i, 1);
+  plSave(); plRenderAll();
+}
+function plSetProjects(val){
+  var plan = plEnsurePlan();
+  plan.projects = String(val).split(',').map(function(x){ return x.trim().toUpperCase(); }).filter(Boolean);
+  plSave(); plLoad();
+}
+function plSetLaneField(id, field, val){
+  var lane = plEnsurePlan().lanes.filter(function(l){ return l.id === id; })[0]; if(!lane) return;
+  if(field === 'people') lane.people = plTextToPeople(val);
+  else if(field === 'initiatives') lane.initiatives = String(val).split(',').map(function(x){ return x.trim(); }).filter(Boolean);
+  else lane[field] = String(val).trim();
+  plSave(); plRenderAll();
+}
+function plAddLane(){
+  plEnsurePlan().lanes.push({ id:'lane'+Date.now(), name:'New lane', team:'INDY', initiatives:[], people:[] });
+  plState.assumpOpen = true; plSave(); plRenderAll();
+}
+function plRemoveLane(id){
+  if(!confirm('Remove this lane? Its tickets will show as "No lane" until you reassign them.')) return;
+  var plan = plEnsurePlan();
+  plan.lanes = plan.lanes.filter(function(l){ return l.id !== id; });
+  plSave(); plRenderAll();
+}
+function plResetPlan(){
+  if(!confirm('Reset lanes, capacity assumptions, typed estimates, notes and ordering back to the defaults?')) return;
+  state.plan = plDefaultPlan(); plState.sort = null;
+  plSave(); plLoad();
+}
+function plSetFilter(k, v){ plState.filters[k] = v; plRenderTable(); }
+function plClearFilters(){
+  plState.filters = { q:'', lane:'', phase:'', initiative:'', outlook:'' };
+  var q = document.getElementById('pl-q'); if(q) q.value = '';
+  plRenderFilters(); plRenderTable();
+}
+function plSetSort(k){
+  var s = plState.sort;
+  if(!s || s.key !== k) plState.sort = { key:k, dir:'asc' };
+  else if(s.dir === 'asc') plState.sort = { key:k, dir:'desc' };
+  else plState.sort = null;
+  plRenderTable();
+}
+
+// ── Visible rows, export ───────────────────────────────────────────────────
+function plSortVal(r, key){
+  if(key === 'days') return r.days;
+  if(key === 'phase') return PL_PHASES.indexOf(r.phase);
+  if(key === 'outlook') return PL_OUTLOOK_RANK[r.outlook] != null ? PL_OUTLOOK_RANK[r.outlook] : 9;
+  if(key === 'key') return plKeyNum(r.key);
+  if(key === 'lane') return r.laneName;
+  if(key === 'status') return r.status;
+  if(key === 'initiative') return r.initiative;
+  return r.key;
+}
+function plVisibleRows(){
+  var calc = plState.calc; if(!calc) return [];
+  var f = plState.filters, plan = plEnsurePlan();
+  var terms = String(f.q||'').trim().toLowerCase().split(/\s+/).filter(Boolean);
+  var laneIdx = {}; plan.lanes.forEach(function(l, i){ laneIdx[l.id] = i; });
+  var rows = calc.rows.filter(function(r){
+    if(f.lane && r.laneKey !== f.lane) return false;
+    if(f.phase && r.phase !== f.phase) return false;
+    if(f.initiative && r.initiative !== f.initiative) return false;
+    if(f.outlook && r.outlook !== f.outlook) return false;
+    if(terms.length){
+      var h = (r.key+' '+r.title+' '+r.status+' '+r.initiative+' '+r.assignee+' '+r.notes+' '+r.laneName+' '+r.phase).toLowerCase();
+      for(var i = 0; i < terms.length; i++){ if(h.indexOf(terms[i]) < 0) return false; }
+    }
+    return true;
+  });
+  var s = plState.sort;
+  if(!s){
+    rows.sort(function(a, b){
+      var la = laneIdx[a.laneKey] != null ? laneIdx[a.laneKey] : 999;
+      var lb = laneIdx[b.laneKey] != null ? laneIdx[b.laneKey] : 999;
+      return (la - lb) || plByPhaseThenOrder(a, b);
+    });
+  } else {
+    var d = s.dir === 'asc' ? 1 : -1;
+    rows.sort(function(a, b){
+      var x = plSortVal(a, s.key), y = plSortVal(b, s.key);
+      if(typeof x === 'number' && typeof y === 'number') return (x - y) * d;
+      return String(x).localeCompare(String(y), undefined, { numeric:true }) * d;
+    });
+  }
+  return rows;
+}
+var PL_SRC_LABEL = { points:'Jira pts', plan:'Plan est.', 'default':'Default', edited:'Edited' };
+function plRowsToMatrix(rows){
+  var q = plShortQuarter();
+  var out = [['Lane','Initiative','Phase','Priority','Ticket','Title','Jira status','Team','Est. days','Estimate source', q+' outlook','Notes']];
+  rows.forEach(function(r){
+    out.push([r.laneName, r.initiative, r.phase, r.rank, r.key, r.title, r.status, r.team, r.days, PL_SRC_LABEL[r.source], plOutlookLabel(r.outlook), r.notes]);
+  });
+  return out;
+}
+function plExportCSV(){
+  var rows = plVisibleRows();
+  if(!rows.length){ setStatus('Nothing to export', 'error'); return; }
+  var csv = plRowsToMatrix(rows).map(function(r){ return r.map(bugsCsvEscape).join(','); }).join('\r\n');
+  var blob = new Blob([csv], { type:'text/csv;charset=utf-8;' });
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  var label = String((getActiveQuarter()||{}).label || 'quarter').replace(/[^a-z0-9]+/gi, '-');
+  a.download = 'capacity-forecast-' + label + '-' + new Date().toISOString().slice(0,10) + '.csv';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(a.href);
+}
+async function plCopyRows(){
+  var rows = plVisibleRows();
+  if(!rows.length){ setStatus('Nothing to copy', 'error'); return; }
+  var text = plRowsToMatrix(rows).map(function(r){
+    return r.map(function(c){ return String(c == null ? '' : c).replace(/[\t\r\n]+/g, ' '); }).join('\t');
+  }).join('\n');
+  try{ await navigator.clipboard.writeText(text); setStatus('Copied ' + rows.length + ' rows', 'ok'); }
+  catch(e){ setStatus('Copy failed: ' + e.message, 'error'); }
+}
+
+// ── Rendering ──────────────────────────────────────────────────────────────
+function plChip(cls, text){ return '<span class="plx-chip plx-'+cls+'">'+escHtml(text)+'</span>'; }
+function plStatusChip(s){
+  var l = String(s||'').toLowerCase();
+  var cls = l === 'blocked' ? 'bad'
+    : (l === 'in progress' || l === 'testing' || l === 'in review' || l === 'review') ? 'ok'
+    : l === 'on hold' ? 'warn' : 'neutral';
+  return plChip(cls, s || 'Unknown');
+}
+function plOutlookChip(code){
+  var cls = { fit:'ok', stretch:'info', partial:'warn', after:'neutral', blocked:'bad', outside:'warn', nolane:'warn' }[code] || 'neutral';
+  return plChip(cls, plOutlookLabel(code));
+}
+
+function plEnsureShell(root){
+  if(document.getElementById('pl-top')) return;
+  root.innerHTML =
+    '<div id="pl-top"></div>' +
+    '<div id="pl-assump"></div>' +
+    '<div id="pl-cap"></div>' +
+    '<div id="pl-bar" class="plx-bar">' +
+      '<input id="pl-q" class="plx-in plx-search" type="search" placeholder="Search tickets, titles, people, notes" autocomplete="off" oninput="plSetFilter(\'q\', this.value)">' +
+      '<span id="pl-selects" style="display:contents"></span>' +
+      '<button class="btn btn-ghost btn-sm" onclick="plClearFilters()">Clear</button>' +
+      '<button class="btn btn-ghost btn-sm" onclick="plCopyRows()">Copy rows</button>' +
+      '<button class="btn btn-ghost btn-sm" onclick="plExportCSV()">&#8595; Export CSV</button>' +
+    '</div>' +
+    '<div id="pl-stats"></div>' +
+    '<div id="pl-table"></div>';
 }
 
 function plRenderAll(){
-  var aq=getActiveQuarter(), themes=getActiveThemes(), labels=plGetLabels();
-  var allEpics=[];
-  themes.forEach(function(t){ (t.epics||[]).forEach(function(e){ allEpics.push({epic:e,theme:t}); }); });
-  var titleEl=document.getElementById('pl-title'), metaEl=document.getElementById('pl-meta');
-  if(titleEl) titleEl.textContent=aq.label+' Planning';
-  if(metaEl) metaEl.textContent='Points-based forecast'+(labels.length?' · filtered: '+labels.join(', '):'');
-  // Future quarter banner in Planning
-  var plBanner=document.getElementById('pl-future-banner');
-  if(aq.start&&new Date(aq.start+'T00:00:00')>new Date()){
-    var plDays=Math.ceil((new Date(aq.start+'T00:00:00')-new Date())/864e5);
-    var plStart=new Date(aq.start+'T00:00:00').toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric'});
-    var plHtml='<div id="pl-future-banner" style="display:flex;align-items:center;gap:10px;background:rgba(59,130,246,0.08);border:0.5px solid rgba(59,130,246,0.25);border-radius:10px;padding:12px 18px;margin-bottom:16px;">'
-      +'<span style="font-size:20px">&#128337;</span>'
-      +'<div><span style="font-size:13px;font-weight:600;color:var(--blue)">'+escHtml(aq.label)+' hasn&#39;t started yet</span>'
-      +'<span style="font-size:12px;color:var(--text3);margin-left:8px">'+plDays+' day'+(plDays!==1?'s':'')+' away · forecast uses previous quarter velocity</span>'
-      +'<div style="font-size:11px;color:var(--text3);margin-top:2px">Velocity and 0% completion are expected until '+plStart+'.</div>'
-      +'</div></div>';
-    if(plBanner){plBanner.outerHTML=plHtml;}
-    else{var pm=document.getElementById('pl-metrics');if(pm)pm.insertAdjacentHTML('beforebegin',plHtml);}
-  } else { if(plBanner) plBanner.remove(); }
-  var vel=plCalcVelocity(), wLeft=weeksLeft();
-  var totalPts=allEpics.reduce(function(a,x){return a+plEpicPts(x.epic).total;},0);
-  var donePts=allEpics.reduce(function(a,x){return a+plEpicPts(x.epic).done;},0);
-  var remPts=totalPts-donePts, wNeeded=vel>0?Math.ceil(remPts/vel):999, overrun=Math.max(0,wNeeded-wLeft);
-  var metrics=[
-    {label:labels.length?'Filtered velocity':'Overall velocity', value:vel>0?vel+' pts/wk':'N/A', sub:'since '+aq.start, color:'var(--blue)'},
-    {label:'Weeks left', value:wLeft, sub:'ends '+aq.end, color:wLeft<4?'var(--red)':'var(--amber)'},
-    {label:'Points left', value:totalPts>0?remPts+' pts':remPts+' stories', sub:donePts+' of '+totalPts+' done', color:'var(--text)'},
-    {label:'Projected', value:overrun>0?'+'+overrun+' wk overrun':'On track', sub:overrun>0?'at current velocity':wLeft+' wks · '+remPts+' pts rem', color:overrun>0?'var(--red)':'var(--green)'},
-  ];
-  var metricsEl=document.getElementById('pl-metrics');
-  if(metricsEl) metricsEl.innerHTML=metrics.map(function(m){
-    return '<div class="pl-metric"><div class="pl-metric-label">'+m.label+'</div><div class="pl-metric-value" style="color:'+m.color+'">'+m.value+'</div><div class="pl-metric-sub">'+m.sub+'</div></div>';
-  }).join('');
-  var sel=document.getElementById('pl-theme-filter'), cur=sel?sel.value:'';
-  if(sel){ sel.innerHTML='<option value="">All themes</option>'+themes.map(function(t){return '<option value="'+escHtml(t.id)+'">'+escHtml(t.name)+'</option>';}).join(''); sel.value=cur; }
-  var ln=document.getElementById('pl-label-note'); if(ln) ln.style.display=labels.length?'inline':'none';
-  plRenderThemeVelocity(); plRenderEngineerVelocity(); plRenderTeamVelocity(); plRenderForecast(); plRenderWorkload(); plRenderBlockers();
+  var root = document.getElementById('pl-root'); if(!root) return;
+  plEnsureShell(root);
+  var bar = document.getElementById('pl-bar');
+  if(activeQuarterKey === '__all__'){
+    document.getElementById('pl-top').innerHTML = '<div class="plx-bottom">Capacity forecasting needs a single quarter. Pick a specific quarter in the quarter switcher.</div>';
+    ['pl-assump','pl-cap','pl-stats','pl-table'].forEach(function(id){ document.getElementById(id).innerHTML = ''; });
+    bar.style.display = 'none';
+    return;
+  }
+  bar.style.display = 'flex';
+  plState.calc = plState.loaded ? plCompute() : null;
+  plRenderTop(); plRenderAssump(); plRenderFilters(); plRenderCapacity(); plRenderTable();
 }
 
-function plRenderThemeVelocity(){
-  var themes=getActiveThemes(), wLeft=weeksLeft(), aq=getActiveQuarter();
-  var we=Math.max(1,(new Date()-new Date(aq.start))/(7*864e5));
-  var body=document.getElementById('pl-theme-vel-body'); if(!body) return;
-  var rows=themes.map(function(t){
-    var epics=t.epics||[];
-    var ptsDone=epics.reduce(function(a,e){return a+plEpicPts(e).done;},0);
-    var ptsTotal=epics.reduce(function(a,e){return a+plEpicPts(e).total;},0);
-    var ptsRem=ptsTotal-ptsDone, vel=Math.round((ptsDone/we)*10)/10;
-    var wNeeded=vel>0?Math.ceil(ptsRem/vel):999, overrun=Math.max(0,wNeeded-wLeft);
-    var pct=ptsTotal>0?Math.round(ptsDone/ptsTotal*100):0;
-    return {name:t.name,color:t.color||'#3b82f6',vel:vel,ptsTotal:ptsTotal,pct:pct,overrun:overrun};
-  }).filter(function(r){return r.ptsTotal>0;});
-  if(!rows.length){body.innerHTML='<div style="padding:16px;color:var(--text3);font-size:12px;text-align:center">No points data — refresh epics</div>';return;}
-  var maxVel=Math.max.apply(null,rows.map(function(r){return r.vel;}))||1;
-  body.innerHTML=rows.map(function(r){
-    var barW=Math.round(r.vel/maxVel*100);
-    var badge=r.overrun>0?'<span class="pl-badge pl-badge-red">+'+r.overrun+'wk</span>':'<span class="pl-badge pl-badge-green">&#10003;</span>';
-    return '<div style="display:grid;grid-template-columns:110px 1fr 50px 70px;gap:10px;padding:9px 16px;border-bottom:0.5px solid rgba(255,255,255,0.04);align-items:center;font-size:12px">'
-      +'<div style="display:flex;align-items:center;gap:6px"><span style="width:7px;height:7px;border-radius:50%;background:'+r.color+';flex-shrink:0;display:inline-block"></span><span style="color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+escHtml(r.name)+'</span></div>'
-      +'<div style="display:flex;align-items:center;gap:8px"><div style="height:5px;flex:1;background:var(--bg3);border-radius:3px;overflow:hidden"><div style="height:5px;border-radius:3px;background:'+r.color+';width:'+barW+'%"></div></div><span style="font-family:var(--font-mono);font-size:11px;color:var(--text3);min-width:50px;text-align:right">'+r.vel+' pt/wk</span></div>'
-      +'<div style="font-size:11px;color:var(--text3);text-align:center;font-family:var(--font-mono)">'+r.pct+'%</div>'
-      +'<div style="text-align:right">'+badge+'</div></div>';
-  }).join('');
+function plRenderTop(){
+  var el = document.getElementById('pl-top'); if(!el) return;
+  var aq = getActiveQuarter(), calc = plState.calc, plan = plEnsurePlan();
+  var asof = plState.loadedAt ? 'Jira data as of ' + plState.loadedAt.toLocaleString() : '';
+  var sprintsAuto = (plan.sprintsOverride == null);
+  var h = '<div class="plx-top"><div>' +
+      '<div class="plx-title">' + escHtml(aq.label || 'Planning') + ' capacity &amp; forecast</div>' +
+      '<div class="plx-sub">Open P0 / P1 / P2 tickets against the people and sprints available. All effort is in person-days.' +
+        (calc ? ' &middot; ' + plFmt(calc.sprints) + ' sprints left' + (sprintsAuto ? ' (from the quarter dates' + (calc.timeOffDays ? ', less ' + plFmt(calc.timeOffDays) + ' days of time off' : '') + ')' : ' (set manually)') : '') + '</div>' +
+    '</div>' +
+    '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span class="plx-sub">' + escHtml(asof) + '</span>' +
+      '<button class="btn btn-ghost btn-sm" onclick="plLoad()"' + (plState.loading ? ' disabled' : '') + '>' + (plState.loading ? '&#8635; Loading…' : '&#8635; Refresh from Jira') + '</button></div>' +
+  '</div>';
+  if(calc) h += '<div class="plx-bottom">' + escHtml(plBottomLine(calc)) + '</div>';
+  el.innerHTML = h;
 }
 
-function plRenderEngineerVelocity(){
-  var teamMap=plBuildTeamMap(), aq=getActiveQuarter();
-  var we=Math.max(1,(new Date()-new Date(aq.start))/(7*864e5));
-  var body=document.getElementById('pl-engineer-vel-body'); if(!body) return;
-  var engineers=Object.keys(teamMap).map(function(name){
-    var d=teamMap[name], vel=Math.round((d.donePts/we)*10)/10;
-    return {name:name,vel:vel,donePts:d.donePts,inprogPts:d.inprogPts};
-  }).filter(function(a){return a.name!=='Unassigned';});
-  engineers.sort(function(a,b){return b.vel-a.vel;});
-  if(!engineers.length){body.innerHTML='<div style="padding:16px;color:var(--text3);font-size:12px;text-align:center">No assignee data — refresh epics</div>';return;}
-  var totalVel=engineers.reduce(function(a,e){return a+e.vel;},0);
-  var avgVel=Math.round((totalVel/engineers.length)*10)/10;
-  var maxVel=Math.max.apply(null,engineers.map(function(e){return e.vel;}))||1;
-  var AV=['#60a5fa','#c084fc','#34d399','#fbbf24','#f87171','#a5b4fc'];
-  body.innerHTML=engineers.map(function(eng,idx){
-    var barW=Math.round(eng.vel/maxVel*100);
-    var diff=avgVel>0?Math.round((eng.vel-avgVel)/avgVel*100):0;
-    var diffStr=diff>0?'+'+diff+'%':diff+'%';
-    var diffCol=diff>=20?'#34d399':diff>=0?'var(--text3)':diff>=-20?'#fbbf24':'#f87171';
-    var initials=eng.name.split(' ').map(function(w){return w[0]||'';}).slice(0,2).join('').toUpperCase();
-    var avCol=AV[idx%AV.length];
-    return '<div style="display:grid;grid-template-columns:28px 90px 1fr 52px 48px;gap:8px;padding:8px 16px;border-bottom:0.5px solid rgba(255,255,255,0.04);align-items:center;font-size:12px">'
-      +'<div style="width:26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;background:rgba(59,130,246,.12);color:'+avCol+';font-family:var(--font-mono)">'+escHtml(initials)+'</div>'
-      +'<div style="color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+escHtml(eng.name.split(' ')[0])+'</div>'
-      +'<div style="display:flex;align-items:center;gap:6px"><div style="height:5px;flex:1;background:var(--bg3);border-radius:3px;overflow:hidden"><div style="height:5px;border-radius:3px;background:'+avCol+';width:'+barW+'%"></div></div><span style="font-family:var(--font-mono);font-size:11px;color:var(--text3);min-width:44px;text-align:right">'+eng.vel+'pt/wk</span></div>'
-      +'<div style="font-family:var(--font-mono);font-size:11px;color:'+diffCol+';text-align:right">'+diffStr+'</div>'
-      +'<div style="font-size:10px;color:var(--text3);font-family:var(--font-mono);text-align:right">'+eng.inprogPts+'pt</div></div>';
+function plRenderAssump(){
+  var el = document.getElementById('pl-assump'); if(!el) return;
+  var plan = plEnsurePlan(), calc = plState.calc;
+  var autoSprints = plSprintInfo(plan).auto;
+  var num = function(label, field, val, step, hint){
+    return '<label class="plx-field"><span>' + label + '</span><input class="plx-in" type="number" min="0" step="' + step + '" value="' + escHtml(val == null ? '' : String(val)) + '" onchange="plSetNum(\'' + field + '\', this.value)">' + (hint ? '<em>' + hint + '</em>' : '') + '</label>';
+  };
+  var lanes = plan.lanes.map(function(l){
+    return '<tr>' +
+      '<td><input class="plx-in" style="width:170px" value="' + escHtml(l.name) + '" data-id="' + escHtml(l.id) + '" onchange="plSetLaneField(this.dataset.id,\'name\',this.value)"></td>' +
+      '<td><input class="plx-in" style="width:80px" value="' + escHtml(l.team) + '" data-id="' + escHtml(l.id) + '" onchange="plSetLaneField(this.dataset.id,\'team\',this.value)"></td>' +
+      '<td><input class="plx-in" style="width:210px" value="' + escHtml(plPeopleToText(l.people)) + '" placeholder="Name:days per sprint, ..." data-id="' + escHtml(l.id) + '" onchange="plSetLaneField(this.dataset.id,\'people\',this.value)"></td>' +
+      '<td><input class="plx-in" style="width:260px" value="' + escHtml((l.initiatives||[]).join(', ')) + '" placeholder="Initiatives this lane takes (optional)" data-id="' + escHtml(l.id) + '" onchange="plSetLaneField(this.dataset.id,\'initiatives\',this.value)"></td>' +
+      '<td><button class="btn btn-ghost btn-sm" data-id="' + escHtml(l.id) + '" onclick="plRemoveLane(this.dataset.id)">&times;</button></td></tr>';
   }).join('');
-  body.innerHTML+='<div style="display:grid;grid-template-columns:28px 90px 1fr 52px 48px;gap:8px;padding:8px 16px;background:var(--bg3);align-items:center;font-size:12px;border-top:0.5px solid var(--border)"><div></div><div style="color:var(--text3);font-family:var(--font-mono);font-size:10px">TEAM AVG</div><div style="display:flex;align-items:center;gap:6px"><div style="height:2px;flex:1;background:var(--border2);border-radius:1px"></div><span style="font-family:var(--font-mono);font-size:11px;font-weight:700;color:var(--text);min-width:44px;text-align:right">'+avgVel+'pt/wk</span></div><div></div><div></div></div>';
+  var timeOff = plan.timeOff.map(function(t, i){
+    var past = t.end && new Date(t.end + 'T23:59:59') < new Date();   // already over: shown faded, no longer counted
+    return '<tr' + (past ? ' style="opacity:.5"' : '') + '>' +
+      '<td><input class="plx-in" style="width:160px" value="' + escHtml(t.label) + '" data-i="' + i + '" onchange="plSetTimeOff(this.dataset.i,\'label\',this.value)"></td>' +
+      '<td><input class="plx-in" type="date" value="' + escHtml(t.start) + '" data-i="' + i + '" onchange="plSetTimeOff(this.dataset.i,\'start\',this.value)"></td>' +
+      '<td><input class="plx-in" type="date" value="' + escHtml(t.end) + '" data-i="' + i + '" onchange="plSetTimeOff(this.dataset.i,\'end\',this.value)"></td>' +
+      '<td><input class="plx-in" type="number" min="0" step="0.5" style="width:70px" value="' + escHtml(String(t.days)) + '" data-i="' + i + '" onchange="plSetTimeOff(this.dataset.i,\'days\',this.value)"></td>' +
+      '<td><button class="btn btn-ghost btn-sm" data-i="' + i + '" onclick="plRemoveTimeOff(this.dataset.i)">&times;</button></td></tr>';
+  }).join('');
+  el.innerHTML =
+    '<details class="plx-card plx-assump"' + (plState.assumpOpen ? ' open' : '') + ' ontoggle="plState.assumpOpen=this.open">' +
+      '<summary>Capacity assumptions <span class="plx-sub">&mdash; people, productive days, sprints left, estimate sizing</span></summary>' +
+      '<div class="plx-assump-body">' +
+        '<div class="plx-fields">' +
+          num('Sprints left (blank = auto, now ' + plFmt(autoSprints) + ')', 'sprintsOverride', plan.sprintsOverride, '0.1', 'Full-sprint equivalents') +
+          num('Default size when unsized', 'defaultDays', plan.defaultDays, '0.5', 'Person-days') +
+          num('Person-days per Jira point', 'pointsToDays', plan.pointsToDays, '0.1', 'Used when a ticket has points') +
+          '<label class="plx-field"><span>Jira projects</span><input class="plx-in" value="' + escHtml(plan.projects.join(', ')) + '" onchange="plSetProjects(this.value)"><em>Comma separated; reloads from Jira</em></label>' +
+        '</div>' +
+        '<div class="plx-sub" style="margin:14px 0 6px">Team time off. Working days everyone is out; only dates still ahead reduce the sprints left (10 working days = 1 sprint).</div>' +
+        '<div class="plx-wrap"><table class="plx-tbl"><thead><tr><th>What</th><th>First day</th><th>Last day</th><th>Working days lost</th><th></th></tr></thead><tbody>' + timeOff + '</tbody></table></div>' +
+        '<div style="margin-top:8px"><button class="btn btn-ghost btn-sm" onclick="plAddTimeOff()">+ Add time off</button></div>' +
+        '<div class="plx-sub" style="margin:14px 0 6px">Lanes. Capacity = people &times; productive days per sprint &times; sprints left. Productive days is the share of a 10-day sprint left for this work after meetings, support, bugs and releases.</div>' +
+        '<div class="plx-wrap"><table class="plx-tbl"><thead><tr><th>Lane</th><th>Team</th><th>People (name:days per sprint)</th><th>Initiatives (optional)</th><th></th></tr></thead><tbody>' + lanes + '</tbody></table></div>' +
+        '<div style="display:flex;gap:8px;margin-top:10px"><button class="btn btn-ghost btn-sm" onclick="plAddLane()">+ Add lane</button><button class="btn btn-ghost btn-sm" onclick="plResetPlan()">Reset to defaults</button></div>' +
+      '</div>' +
+    '</details>';
 }
 
-function plRenderForecast(){
-  var themes=getActiveThemes(), wLeft=weeksLeft(), vel=plCalcVelocity();
-  var filterTheme=(document.getElementById('pl-theme-filter')||{}).value||'';
-  var teamMap=plBuildTeamMap(), aq=getActiveQuarter();
-  var we=Math.max(1,(new Date()-new Date(aq.start))/(7*864e5));
-  var assigneeVel={};
-  Object.keys(teamMap).forEach(function(name){ assigneeVel[name]=Math.round((teamMap[name].donePts/we)*10)/10; });
-  var rows=[];
-  themes.forEach(function(t){
-    if(filterTheme&&t.id!==filterTheme) return;
-    (t.epics||[]).forEach(function(e){
-      var pts=plEpicPts(e), pct=pts.total>0?Math.round(pts.done/pts.total*100):0;
-      var epicAssignees={};
-      plFilterStories(e.storyList).forEach(function(s){
-        if(s.assignee&&s.assignee!=='Unassigned'){
-          if(!epicAssignees[s.assignee]) epicAssignees[s.assignee]=0;
-          if(s.statusCat!=='done') epicAssignees[s.assignee]+=(s.points||0);
-        }
-      });
-      var wNeeded=0;
-      if(pts.hasPoints&&pts.rem>0){
-        var names=Object.keys(epicAssignees);
-        if(names.length){ names.forEach(function(name){ var aVel=assigneeVel[name]||vel||1, w=epicAssignees[name]>0?Math.ceil(epicAssignees[name]/aVel):0; if(w>wNeeded) wNeeded=w; }); }
-        else { wNeeded=vel>0?Math.ceil(pts.rem/vel):999; }
-      }
-      rows.push({e:e,t:t,ptsTotal:pts.total,ptsDone:pts.done,ptsRem:pts.rem,pct:pct,hasPoints:pts.hasPoints,wNeeded:wNeeded,wLeft:wLeft,assignees:Object.keys(epicAssignees)});
-    });
+function plRenderFilters(){
+  var el = document.getElementById('pl-selects'); if(!el) return;
+  var plan = plEnsurePlan(), calc = plState.calc, f = plState.filters;
+  var opt = function(v, label, cur){ return '<option value="' + escHtml(v) + '"' + (cur === v ? ' selected' : '') + '>' + escHtml(label) + '</option>'; };
+  var sel = function(key, allLabel, options){
+    return '<select class="plx-in" onchange="plSetFilter(\'' + key + '\', this.value)">' + opt('', allLabel, f[key]) + options.map(function(o){ return opt(o[0], o[1], f[key]); }).join('') + '</select>';
+  };
+  var inits = [];
+  if(calc) calc.rows.forEach(function(r){ if(inits.indexOf(r.initiative) < 0) inits.push(r.initiative); });
+  var laneOpts = plan.lanes.map(function(l){ return [l.id, l.name]; });
+  if(calc && calc.rows.some(function(r){ return r.laneKey === '__none'; })) laneOpts.push(['__none', 'No lane']);
+  var outlookOpts = ['fit','stretch','partial','after','blocked','outside','nolane'].map(function(c){ return [c, plOutlookLabel(c)]; });
+  el.innerHTML =
+    sel('initiative', 'All initiatives', inits.map(function(i){ return [i, i]; })) +
+    sel('phase', 'All phases', PL_PHASES.map(function(p){ return [p, p]; })) +
+    sel('lane', 'All lanes', laneOpts) +
+    sel('outlook', 'All outlooks', outlookOpts);
+}
+
+function plRenderCapacity(){
+  var el = document.getElementById('pl-cap'); if(!el) return;
+  var calc = plState.calc;
+  if(!calc){ el.innerHTML = ''; return; }
+  var red = function(v){ return v < 0 ? ' style="color:var(--red);font-weight:600"' : ''; };
+  var body = '', teams = {}, total = { cap:0, p0:0, p1:0, p2:0 };
+  calc.summaries.forEach(function(s){
+    var t = s.lane.team || 'Other';
+    teams[t] = teams[t] || { cap:0, p0:0, p1:0, p2:0, lanes:0 };
+    teams[t].cap += s.capacity; teams[t].p0 += s.eff.P0; teams[t].p1 += s.eff.P1; teams[t].p2 += s.eff.P2; teams[t].lanes++;
+    total.cap += s.capacity; total.p0 += s.eff.P0; total.p1 += s.eff.P1; total.p2 += s.eff.P2;
+    var who = (s.lane.people || []).map(function(p){ return p.name; }).join(', ') || '&mdash;';
+    body += '<tr><td><strong>' + escHtml(s.lane.name) + '</strong></td><td>' + (s.lane.people && s.lane.people.length ? escHtml(who) : '&mdash;') + '</td>' +
+      '<td class="plx-num">' + plFmt(s.capacity) + '</td><td class="plx-num">' + plFmt(s.eff.P0) + '</td>' +
+      '<td class="plx-num"' + red(s.left) + '>' + plFmt(s.left) + '</td>' +
+      '<td class="plx-num">' + plFmt(s.eff.P1) + '</td><td class="plx-num">' + plFmt(s.eff.P2) + '</td>' +
+      '<td>' + escHtml(plVerdict(s)) + '</td></tr>';
   });
-  rows.sort(function(a,b){return Math.max(0,b.wNeeded-b.wLeft)-Math.max(0,a.wNeeded-a.wLeft);});
-  var atRisk=rows.filter(function(r){return r.wNeeded>r.wLeft&&r.ptsRem>0;}).length;
-  var sub=document.getElementById('pl-forecast-sub'); if(sub) sub.textContent='Points · '+atRisk+' of '+rows.length+' epics at risk';
-  var body=document.getElementById('pl-forecast-body');
-  if(!rows.length){body.innerHTML='<div style="padding:20px;color:var(--text3);font-size:13px;text-align:center">No epics found</div>';return;}
-  body.innerHTML=rows.map(function(r,i){
-    var onTrack=r.wNeeded<=r.wLeft||r.ptsRem<=0, overrun=Math.max(0,r.wNeeded-r.wLeft);
-    var barColor=r.pct>=75?'#22c55e':r.pct>=40?'#3b82f6':'#ef4444';
-    var badge=!r.hasPoints?'<span class="pl-badge pl-badge-amber">No pts</span>':onTrack?'<span class="pl-badge pl-badge-green">&#10003; On track</span>':'<span class="pl-badge pl-badge-red">+'+overrun+' wk</span>';
-    var savedNote=plState.notes[r.e.key]||'';
-    return '<div class="pl-tbl-row" style="grid-template-columns:1fr 130px 110px 100px 110px">'
-      +'<div><div style="display:flex;align-items:center;gap:6px;margin-bottom:2px"><span style="width:7px;height:7px;border-radius:50%;background:'+(r.t.color||'var(--blue)')+';flex-shrink:0;display:inline-block"></span><a href="https://riversidejira.atlassian.net/browse/'+r.e.key+'" target="_blank" style="font-family:var(--font-mono);font-size:11px;color:var(--blue);text-decoration:none">'+escHtml(r.e.key)+'</a><span style="font-size:11px;color:var(--text3)">'+escHtml(r.t.name)+'</span></div>'
-      +'<div style="font-size:13px;color:var(--text);margin-bottom:3px">'+escHtml(r.e.title||r.e.key)+'</div>'
-      +'<div style="font-size:11px;color:var(--text3);font-family:var(--font-mono);margin-bottom:4px">'+escHtml(r.assignees.length?r.assignees.join(', '):'Unassigned')+'</div>'
-      +'<button class="pl-note-btn" onclick="plToggleNote('+i+')"><span id="pl-note-icon-'+i+'">&#43;</span> '+(savedNote?'Edit note':'Add delay note')+'</button>'
-      +'<div class="pl-note-wrap" id="pl-note-wrap-'+i+'"><textarea class="pl-note-input" rows="2" data-ekey="'+escHtml(r.e.key)+'" placeholder="e.g. Blocked on infra..." onchange="plSaveNote(this)">'+escHtml(savedNote)+'</textarea></div></div>'
-      +'<div style="display:flex;align-items:center;gap:8px;padding-top:4px"><div class="pl-pbar-wrap"><div class="pl-pbar" style="width:'+r.pct+'%;background:'+barColor+'"></div></div><span style="font-size:11px;color:var(--text3);min-width:30px">'+r.pct+'%</span></div>'
-      +'<div style="padding-top:2px"><div style="font-size:13px;color:var(--text)">'+r.ptsDone+' / '+r.ptsTotal+'</div><div style="font-size:10px;color:var(--text3);font-family:var(--font-mono)">pts done</div></div>'
-      +'<div style="padding-top:2px"><div style="font-size:13px;color:var(--text2)">'+r.ptsRem+' pts</div><div style="font-size:10px;color:var(--text3);font-family:var(--font-mono)">'+(r.ptsRem>0&&r.wNeeded>0?'~'+r.wNeeded+' wks':'done')+'</div></div>'
-      +'<div style="padding-top:4px">'+badge+'</div></div>';
-  }).join('');
-}
-
-function plToggleNote(i){ var wrap=document.getElementById('pl-note-wrap-'+i),icon=document.getElementById('pl-note-icon-'+i); if(!wrap) return; var isOpen=wrap.classList.contains('open'); wrap.className=isOpen?'pl-note-wrap':'pl-note-wrap open'; if(icon) icon.textContent=isOpen?'+':'-'; }
-function plSaveNote(el){ plState.notes[el.getAttribute('data-ekey')]=el.value; }
-
-function plRenderWorkload(){
-  var teamMap=plBuildTeamMap(), threshold=parseInt((document.getElementById('pl-threshold')||{}).value||5);
-  var aq=getActiveQuarter(), we=Math.max(1,(new Date()-new Date(aq.start))/(7*864e5));
-  var assignees=Object.keys(teamMap).map(function(name){
-    var d=teamMap[name];
-    return {name:name,donePts:d.donePts,inprogPts:d.inprogPts,todoPts:d.todoPts,inprogStories:d.inprogStories,velocity:Math.round((d.donePts/we)*10)/10,stories:d.stories};
-  }).filter(function(a){return a.name!=='Unassigned';});
-  assignees.sort(function(a,b){return b.inprogPts-a.inprogPts;});
-  var body=document.getElementById('pl-workload-body');
-  if(!assignees.length){body.innerHTML='<div style="padding:20px;color:var(--text3);font-size:13px;text-align:center;grid-column:1/-1">No assignee data — refresh epics to load stories</div>';return;}
-  var AV=['rgba(59,130,246,.15);color:#60a5fa','rgba(168,85,247,.15);color:#c084fc','rgba(16,185,129,.15);color:#34d399','rgba(245,158,11,.15);color:#fbbf24','rgba(239,68,68,.15);color:#f87171','rgba(99,102,241,.15);color:#a5b4fc'];
-  body.innerHTML=assignees.map(function(a,idx){
-    var overloaded=a.inprogStories>=threshold, avColor=AV[idx%AV.length];
-    var initials=a.name.split(' ').map(function(w){return w[0]||'';}).slice(0,2).join('').toUpperCase();
-    var storyRows=a.stories.map(function(s){
-      var dotColor=s.statusCat==='done'?'#22c55e':(s.statusCat==='indeterminate'?'#3b82f6':'#64748b');
-      var lineThru=s.statusCat==='done'?'text-decoration:line-through;color:var(--text3)':'color:var(--text2)';
-      return '<div class="pl-story"><div class="pl-story-dot" style="background:'+dotColor+'"></div><span class="pl-story-key"><a href="https://riversidejira.atlassian.net/browse/'+s.key+'" target="_blank" style="color:var(--blue);text-decoration:none">'+escHtml(s.key)+'</a></span><span style="flex:1;font-size:12px;'+lineThru+'">'+escHtml(s.summary)+'</span>'+(s.points?'<span class="pl-story-pts">'+s.points+'pt</span>':'')+'</div>';
-    }).join('');
-    return '<div class="pl-assignee-card"><div style="display:flex;align-items:center;gap:10px;margin-bottom:8px"><div class="pl-av" style="background:'+avColor+'">'+escHtml(initials)+'</div>'
-      +'<div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600;color:var(--text);display:flex;align-items:center;gap:6px;flex-wrap:wrap">'+escHtml(a.name)+(overloaded?'<span class="pl-badge pl-badge-red" style="font-size:9px;padding:1px 6px">heavy load</span>':'')+'</div>'
-      +'<div style="font-size:11px;color:var(--text3);margin-top:1px;font-family:var(--font-mono)">'+a.velocity+' pts/wk</div></div></div>'
-      +'<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:10px">'
-      +'<div style="text-align:center;background:rgba(16,185,129,.08);border-radius:6px;padding:5px 4px"><div style="font-size:14px;font-weight:700;color:#34d399">'+a.donePts+'</div><div style="font-size:9px;color:var(--text3);font-family:var(--font-mono)">PTS DONE</div></div>'
-      +'<div style="text-align:center;background:rgba(59,130,246,.08);border-radius:6px;padding:5px 4px"><div style="font-size:14px;font-weight:700;color:#60a5fa">'+a.inprogPts+'</div><div style="font-size:9px;color:var(--text3);font-family:var(--font-mono)">PTS ACTIVE</div></div>'
-      +'<div style="text-align:center;background:rgba(100,116,139,.08);border-radius:6px;padding:5px 4px"><div style="font-size:14px;font-weight:700;color:var(--text2)">'+a.todoPts+'</div><div style="font-size:9px;color:var(--text3);font-family:var(--font-mono)">PTS QUEUED</div></div></div>'
-      +'<div style="height:3px;background:var(--bg2);border-radius:2px;margin-bottom:10px"><div style="height:3px;border-radius:2px;background:'+(overloaded?'#ef4444':'#3b82f6')+';width:'+Math.min(100,Math.round(a.inprogStories/Math.max(threshold,1)*100))+'%"></div></div>'
-      +storyRows+'</div>';
-  }).join('');
-}
-
-function plRenderBlockers(){
-  var themes=getActiveThemes(), threshold=parseInt((document.getElementById('pl-stale-days')||{}).value||7), rows=[];
-  themes.forEach(function(t){
-    (t.epics||[]).forEach(function(e){
-      plFilterStories(e.storyList).forEach(function(s){
-        if(s.statusCat!=='indeterminate') return;
-        var days=threshold;
-        if(s.updated) days=Math.floor((new Date()-new Date(s.updated))/864e5);
-        if(days>=threshold) rows.push({key:s.key,summary:s.summary||'',assignee:s.assignee||'Unassigned',pts:s.points||0,epic:e.key,epicTitle:e.title||e.key,days:days});
-      });
-    });
+  Object.keys(teams).forEach(function(t){
+    if(teams[t].lanes < 2) return;
+    var x = teams[t], left = x.cap - x.p0;
+    body += '<tr class="plx-sum"><td>' + escHtml(t) + ' total</td><td></td><td class="plx-num">' + plFmt(x.cap) + '</td><td class="plx-num">' + plFmt(x.p0) + '</td><td class="plx-num"' + red(left) + '>' + plFmt(left) + '</td><td class="plx-num">' + plFmt(x.p1) + '</td><td class="plx-num">' + plFmt(x.p2) + '</td><td></td></tr>';
   });
-  rows.sort(function(a,b){return b.days-a.days;});
-  var body=document.getElementById('pl-blockers-body');
-  if(!rows.length){body.innerHTML='<div style="padding:20px;color:var(--text3);font-size:13px;text-align:center">No stale stories found — refresh epics to load story dates</div>';return;}
-  body.innerHTML=rows.map(function(r){
-    var col=r.days>=21?'#ef4444':r.days>=14?'#f87171':'#fbbf24';
-    var bg=r.days>=21?'rgba(239,68,68,.1)':r.days>=14?'rgba(239,68,68,.06)':'rgba(245,158,11,.08)';
-    return '<div style="display:grid;grid-template-columns:72px 1fr 60px 100px 80px;gap:12px;padding:11px 18px;border-bottom:0.5px solid rgba(255,255,255,0.04);align-items:start">'
-      +'<a href="https://riversidejira.atlassian.net/browse/'+r.key+'" target="_blank" style="font-family:var(--font-mono);font-size:11px;color:var(--blue);text-decoration:none;margin-top:1px">'+escHtml(r.key)+'</a>'
-      +'<div><div style="font-size:13px;color:var(--text);margin-bottom:2px">'+escHtml(r.summary)+'</div><div style="font-size:11px;color:var(--text3)"><a href="https://riversidejira.atlassian.net/browse/'+r.epic+'" target="_blank" style="color:var(--blue);text-decoration:none">'+escHtml(r.epic)+'</a> · '+escHtml(r.epicTitle)+'</div></div>'
-      +'<div style="font-family:var(--font-mono);font-size:12px;color:var(--text2);padding-top:1px">'+(r.pts?r.pts+'pt':'—')+'</div>'
-      +'<div style="font-size:12px;color:var(--text2);padding-top:1px">'+escHtml(r.assignee)+'</div>'
-      +'<div style="font-family:var(--font-mono);font-size:11px;padding:2px 8px;border-radius:10px;background:'+bg+';color:'+col+';text-align:center;width:fit-content">'+r.days+'d stale</div></div>';
-  }).join('');
+  var tl = total.cap - total.p0;
+  body += '<tr class="plx-sum"><td>All lanes</td><td></td><td class="plx-num">' + plFmt(total.cap) + '</td><td class="plx-num">' + plFmt(total.p0) + '</td><td class="plx-num"' + red(tl) + '>' + plFmt(tl) + '</td><td class="plx-num">' + plFmt(total.p1) + '</td><td class="plx-num">' + plFmt(total.p2) + '</td><td></td></tr>';
+  el.innerHTML =
+    '<div class="plx-card"><div class="plx-card-h"><div class="plx-card-t">Capacity versus effort</div>' +
+    '<div class="plx-sub">Person-days. "Left after P0" is capacity minus P0 effort; where P1 effort is larger than that, not all of P1 fits.</div></div>' +
+    '<div class="plx-wrap"><table class="plx-tbl"><thead><tr><th>Lane</th><th>Who</th><th class="plx-num">Capacity</th><th class="plx-num">P0 effort</th><th class="plx-num">Left after P0</th><th class="plx-num">P1 effort</th><th class="plx-num">P2 effort</th><th>Verdict</th></tr></thead><tbody>' + body + '</tbody></table></div></div>';
 }
+
+function plRowHtml(r, canMove, lanes){
+  var laneOpts = lanes.map(function(l){ return '<option value="' + escHtml(l.id) + '"' + (r.laneKey === l.id ? ' selected' : '') + '>' + escHtml(l.name) + '</option>'; }).join('')
+    + '<option value="__none"' + (r.laneKey === '__none' ? ' selected' : '') + '>No lane</option>';
+  var phaseCls = r.phase === 'P0' ? 'bad' : r.phase === 'P1' ? 'warn' : 'neutral';
+  var also = r.phases.filter(function(p){ return p !== r.phase; });
+  var srcTip = r.source === 'plan' ? 'Estimate from the Q4 2026 Capacity & Forecast Confluence page' : r.source === 'points' ? 'Jira story points x person-days per point' : r.source === 'edited' ? 'Typed in this tab' : 'Default size - no points and no plan estimate';
+  var capNote = (r.outlook === 'fit' || r.outlook === 'stretch' || r.outlook === 'partial') ? '<div class="plx-cap">cum. ' + plFmt(r.cum) + ' days</div>' : '';
+  return '<tr style="--rail:' + plInitColor(r.initiative) + '">' +
+    '<td class="plx-mv">' + (canMove
+      ? '<button class="plx-mvb" data-k="' + escHtml(r.key) + '" data-d="up" onclick="plMove(this.dataset.k,this.dataset.d)" aria-label="Move up">&#9650;</button><button class="plx-mvb" data-k="' + escHtml(r.key) + '" data-d="down" onclick="plMove(this.dataset.k,this.dataset.d)" aria-label="Move down">&#9660;</button>'
+      : '') + '</td>' +
+    '<td><a href="' + escHtml(r.link) + '" target="_blank" rel="noopener">' + escHtml(r.key) + '</a></td>' +
+    '<td class="plx-titlecell"><div>' + escHtml(r.title) + '</div><div class="plx-cap">' + escHtml(r.initiative) + (r.assignee && r.assignee !== 'Unassigned' ? ' &middot; ' + escHtml(r.assignee) : '') + '</div></td>' +
+    '<td>' + plChip(phaseCls, r.phase) + (also.length ? '<div class="plx-cap">also ' + escHtml(also.join(', ')) + '</div>' : '') + '</td>' +
+    '<td><select class="plx-in" data-k="' + escHtml(r.key) + '" onchange="plSetLane(this.dataset.k,this.value)">' + laneOpts + '</select></td>' +
+    '<td>' + plStatusChip(r.status) + '</td>' +
+    '<td class="plx-num"><input class="plx-in plx-days" type="number" min="0" step="0.5" value="' + plFmt(r.days) + '" data-k="' + escHtml(r.key) + '" onchange="plSetDays(this.dataset.k,this.value)"><div class="plx-cap" title="' + escHtml(srcTip) + '">' + escHtml(PL_SRC_LABEL[r.source]) + '</div></td>' +
+    '<td>' + plOutlookChip(r.outlook) + capNote + '</td>' +
+    '<td><textarea class="plx-in plx-notes" rows="3" data-k="' + escHtml(r.key) + '" onchange="plSetNotes(this.dataset.k,this.value)">' + escHtml(r.notes) + '</textarea></td>' +
+  '</tr>';
+}
+
+function plRenderTable(){
+  var el = document.getElementById('pl-table'), st = document.getElementById('pl-stats');
+  if(!el) return;
+  var plan = plEnsurePlan(), calc = plState.calc;
+  if(plState.loading && !calc){ el.innerHTML = '<div class="plx-empty">&#8635; Loading tickets from Jira…</div>'; if(st) st.innerHTML = ''; return; }
+  if(plState.error){
+    el.innerHTML = '<div class="plx-empty" style="color:var(--red)">Could not load tickets: ' + escHtml(plState.error) + '<br><br><button class="btn btn-ghost btn-sm" onclick="plLoad()">&#8635; Retry</button></div>';
+    if(st) st.innerHTML = ''; return;
+  }
+  if(!calc){ el.innerHTML = ''; if(st) st.innerHTML = ''; return; }
+  if(!calc.rows.length){
+    el.innerHTML = '<div class="plx-empty">No open tickets carry a P0, P1 or P2 label in ' + escHtml(plan.projects.join(', ') || 'any project') + '.' + (calc.doneCount ? ' (' + calc.doneCount + ' finished ticket' + (calc.doneCount === 1 ? '' : 's') + ' left out.)' : '') + '</div>';
+    if(st) st.innerHTML = ''; return;
+  }
+  var rows = plVisibleRows();
+  var canMove = !plState.sort;
+  var days = rows.reduce(function(a, r){ return a + r.days; }, 0);
+  var cnt = function(p){ return rows.filter(function(r){ return r.phase === p; }).length; };
+  if(st) st.innerHTML = '<div class="plx-stats"><span>Showing <strong>' + rows.length + '</strong> of ' + calc.rows.length + ' tickets</span><span><strong>' + plFmt(days) + '</strong> person-days</span><span>P0 <strong>' + cnt('P0') + '</strong></span><span>P1 <strong>' + cnt('P1') + '</strong></span><span>P2 <strong>' + cnt('P2') + '</strong></span>' +
+    '<span>Estimates: <strong>' + calc.bySource.points + '</strong> Jira pts &middot; <strong>' + calc.bySource.plan + '</strong> plan &middot; <strong>' + calc.bySource.edited + '</strong> edited &middot; <strong>' + calc.bySource['default'] + '</strong> default</span></div>';
+
+  var th = function(key, label, cls){
+    var s = plState.sort, arrow = s && s.key === key ? '<span class="plx-arrow">' + (s.dir === 'asc' ? '&#9650;' : '&#9660;') + '</span>' : '';
+    return '<th class="' + (cls || '') + '" data-s="' + key + '" onclick="plSetSort(this.dataset.s)" title="Click to sort">' + label + arrow + '</th>';
+  };
+  var head = '<tr><th class="plx-mv"></th>' + th('key', 'Ticket') + '<th>Title</th>' + th('phase', 'Phase') + th('lane', 'Who') + th('status', 'Jira status') + th('days', 'Est. days', 'plx-num') + th('outlook', plShortQuarter() + ' outlook') + '<th>Dependencies and notes</th></tr>';
+  var body = rows.length ? rows.map(function(r){ return plRowHtml(r, canMove, plan.lanes); }).join('') : '';
+  el.innerHTML =
+    '<div class="plx-card"><div class="plx-wrap plx-scroll"><table class="plx-tbl plx-main"><thead>' + head + '</thead><tbody>' + body + '</tbody></table>' +
+    (rows.length ? '' : '<div class="plx-empty">No tickets match. Clear the search or a filter to see more.</div>') + '</div></div>' +
+    '<p class="plx-foot">' + (plState.sort ? 'Sorted by a column, so rows can\'t be reordered. Click the heading again to clear the sort. ' : 'Rows are in fill order for each lane: all P0, then P1, then P2. Use the arrows to change priority within a lane and phase; the outlook updates. ') +
+    'A ticket counts once, under the phase that carries its effort. ' + (calc.doneCount || calc.droppedCount ? calc.doneCount + ' finished and ' + calc.droppedCount + ' cancelled/postponed ticket(s) are left out. ' : '') +
+    'Plan estimates come from the <a href="' + PL_PLAN_PAGE + '" target="_blank" rel="noopener">Q4 2026 Capacity &amp; Forecast page</a>; they are rough sizing, not team estimates.</p>';
+}
+
 // ══════════════════════════════════════════════════════════════════════════
 // END PLANNING MODULE
 // ══════════════════════════════════════════════════════════════════════════
@@ -4987,86 +5479,6 @@ function renderEpicCompletionAllQ(){
 // ── End Epic Completion Chart ────────────────────────────────────────────
 
 
-function plRenderTeamVelocity(){
-  var body = document.getElementById('pl-team-vel-body'); if(!body) return;
-  var aq = getActiveQuarter();
-  var we = Math.max(1, (new Date() - new Date(aq.start)) / (7*864e5));
-
-  // Team buckets are discovered from the actual Agile Team field values on
-  // the stories themselves — not a hardcoded list. (A previous version
-  // hardcoded 'INDY' and 'X-Men', but those are Jira *labels*, not Agile
-  // Team field values, so real team names never matched and this chart
-  // silently broke or stayed empty.)
-  var TEAM_COLORS = ['#3b82f6','#a855f7','#f59e0b','#22c55e','#ec4899','#06b6d4','#eab308','#8b5cf6'];
-  var teamData = {};
-  var teamOrder = [];
-  function getBucket(name) {
-    if (!teamData[name]) {
-      teamData[name] = {donePts:0,inprogPts:0,todoPts:0,doneStories:0,totalPts:0};
-      teamOrder.push(name);
-    }
-    return teamData[name];
-  }
-
-  getActiveThemes().forEach(function(t){
-    (t.epics||[]).forEach(function(e){
-      plFilterStories(e.storyList).forEach(function(s){
-        var pts = s.points||0;
-        var teamName = s.team || 'Untagged';
-        var d = getBucket(teamName);
-        d.totalPts += pts;
-        if(s.statusCat==='done'){ d.donePts+=pts; d.doneStories++; }
-        else if(s.statusCat==='indeterminate') d.inprogPts+=pts;
-        else d.todoPts+=pts;
-      });
-    });
-  });
-
-  // Keep discovery order stable, but always show Untagged last.
-  teamOrder.sort(function(a,b){
-    if(a==='Untagged') return 1;
-    if(b==='Untagged') return -1;
-    return 0;
-  });
-
-  var rows = teamOrder.map(function(name,i){
-    var d = teamData[name];
-    var vel = Math.round((d.donePts/we)*10)/10;
-    var color = name==='Untagged' ? '#64748b' : TEAM_COLORS[i % TEAM_COLORS.length];
-    return {name:name, color:color, vel:vel, donePts:d.donePts, inprogPts:d.inprogPts, todoPts:d.todoPts, totalPts:d.totalPts, doneStories:d.doneStories};
-  });
-
-  if(!rows.length || !rows.some(function(r){return r.totalPts>0;})){
-    body.innerHTML='<div style="padding:16px;color:var(--text3);font-size:12px;text-align:center">No stories with an Agile Team field value found for this quarter — refresh epics to load the latest data</div>';
-    return;
-  }
-
-  var maxVel = Math.max.apply(null, rows.map(function(r){return r.vel;}))||1;
-
-  body.innerHTML = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;padding:12px 16px">'
-    + rows.map(function(r){
-      var barW = Math.round(r.vel/maxVel*100);
-      var pct = r.totalPts>0?Math.round(r.donePts/r.totalPts*100):0;
-      var pctCol = pct>=75?'#22c55e':pct>=40?'#f59e0b':'#ef4444';
-      return '<div style="background:var(--bg3);border:0.5px solid var(--border);border-radius:10px;padding:14px 16px">'
-        +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">'
-        +'<span style="width:10px;height:10px;border-radius:50%;background:'+r.color+';flex-shrink:0;display:inline-block"></span>'
-        +'<span style="font-size:14px;font-weight:600;color:var(--text)">'+escHtml(r.name)+'</span>'
-        +'<span style="font-family:var(--font-mono);font-size:11px;margin-left:auto;color:'+pctCol+'">'+pct+'% done</span>'
-        +'</div>'
-        +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">'
-        +'<div style="flex:1;height:6px;background:var(--bg2);border-radius:3px;overflow:hidden"><div style="height:100%;width:'+barW+'%;background:'+r.color+';border-radius:3px;opacity:0.85"></div></div>'
-        +'<span style="font-family:var(--font-mono);font-size:13px;font-weight:600;color:var(--text);min-width:60px;text-align:right">'+r.vel+' pt/wk</span>'
-        +'</div>'
-        +'<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-top:8px">'
-        +'<div style="text-align:center;background:rgba(34,197,94,.08);border-radius:6px;padding:5px 4px"><div style="font-size:13px;font-weight:700;color:#34d399">'+r.donePts+'</div><div style="font-size:9px;color:var(--text3);font-family:var(--font-mono)">PTS DONE</div></div>'
-        +'<div style="text-align:center;background:rgba(59,130,246,.08);border-radius:6px;padding:5px 4px"><div style="font-size:13px;font-weight:700;color:#60a5fa">'+r.inprogPts+'</div><div style="font-size:9px;color:var(--text3);font-family:var(--font-mono)">PTS ACTIVE</div></div>'
-        +'<div style="text-align:center;background:rgba(100,116,139,.08);border-radius:6px;padding:5px 4px"><div style="font-size:13px;font-weight:700;color:var(--text2)">'+r.todoPts+'</div><div style="font-size:9px;color:var(--text3);font-family:var(--font-mono)">PTS QUEUED</div></div>'
-        +'</div>'
-        +'</div>';
-    }).join('')
-    +'</div>';
-}
 
 
 function qStatus(k){
